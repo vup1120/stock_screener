@@ -1,0 +1,30 @@
+# 台股/美股 SMC + UT Bot 篩選系統
+# ============================================================
+
+# === 核心套件 (必裝) ===
+pandas>=1.5.0
+numpy>=1.21.0
+requests>=2.28.0
+yfinance>=0.2.0
+
+# === 視覺化套件 (推薦安裝) ===
+# Plotly - TradingView 風格互動式圖表（強力推薦！）
+plotly>=5.0.0
+
+# mplfinance - 靜態 K 線圖 + Heikin Ashi
+mplfinance>=0.12.0
+matplotlib>=3.5.0
+
+# kaleido - 匯出 Plotly 圖表為 PNG/PDF（可選）
+# kaleido>=0.2.0
+
+# === AI 分析 (可選) ===
+google-generativeai>=0.3.0
+
+# === 排程 (可選) ===
+schedule>=1.2.0
+
+# ============================================================
+# 快速安裝:
+# pip install pandas numpy requests yfinance plotly mplfinance matplotlib
+# ============================================================
