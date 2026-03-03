@@ -118,8 +118,12 @@ class PlotlyChart:
         'choch_bear': '#ff1744',   # CHoCH 空方
         'ob_bull': 'rgba(33, 150, 243, 0.3)',   # Order Block 多方
         'ob_bear': 'rgba(244, 67, 54, 0.3)',    # Order Block 空方
+        'ob_perfect_bull': 'rgba(33, 150, 243, 0.6)',  # Perfect OB 多方
+        'ob_perfect_bear': 'rgba(244, 67, 54, 0.6)',   # Perfect OB 空方
         'fvg_bull': 'rgba(0, 230, 118, 0.2)',   # FVG 多方
         'fvg_bear': 'rgba(255, 23, 68, 0.2)',   # FVG 空方
+        'sweep_bull': '#ffeb3b',    # 流動性掃蕩 多方（金黃）
+        'sweep_bear': '#ff6f00',    # 流動性掃蕩 空方（橙色）
     }
 
     # TradingView 淺色主題
@@ -143,8 +147,12 @@ class PlotlyChart:
         'choch_bear': '#ff1744',
         'ob_bull': 'rgba(33, 150, 243, 0.3)',
         'ob_bear': 'rgba(244, 67, 54, 0.3)',
+        'ob_perfect_bull': 'rgba(33, 150, 243, 0.6)',
+        'ob_perfect_bear': 'rgba(244, 67, 54, 0.6)',
         'fvg_bull': 'rgba(0, 230, 118, 0.2)',
         'fvg_bear': 'rgba(255, 23, 68, 0.2)',
+        'sweep_bull': '#ffeb3b',
+        'sweep_bear': '#ff6f00',
     }
     
     def __init__(self, df: pd.DataFrame, title: str = "Stock Chart", theme: str = "light"):
@@ -548,21 +556,40 @@ class PlotlyChart:
     
     def add_order_blocks(self, order_blocks: List[Dict]):
         """
-        加入 Order Blocks 區塊
-        
-        order_blocks: List of dict with keys: high, low, bar_index, bias ('bullish'/'bearish')
+        加入 Order Blocks 區塊（支援 Perfect OB 高亮與評分標註）
+
+        order_blocks: List of dict with keys:
+            high, low, bar_index, bias ('bullish'/'bearish')
+            Optional: confluence_score (int), mitigated (bool)
         """
         if self.fig is None:
             raise ValueError("請先建立圖表")
-        
+
         for ob in order_blocks[-10:]:  # 只顯示最近 10 個
-            color = self.COLORS['ob_bull'] if ob.get('bias') == 'bullish' else self.COLORS['ob_bear']
-            
+            is_mitigated = ob.get('mitigated', False)
+            score = ob.get('confluence_score', 0)
+            is_perfect = score >= 3
+
+            if is_mitigated:
+                # Mitigated OBs: dimmed with dashed border
+                color = 'rgba(128, 128, 128, 0.15)'
+                border_color = 'rgba(128, 128, 128, 0.3)'
+            elif is_perfect:
+                # Perfect OBs: brighter colors with solid border
+                color = self.COLORS.get('ob_perfect_bull', self.COLORS['ob_bull']) if ob.get('bias') == 'bullish' else self.COLORS.get('ob_perfect_bear', self.COLORS['ob_bear'])
+                border_color = self.COLORS['bos_bull'] if ob.get('bias') == 'bullish' else self.COLORS['bos_bear']
+            else:
+                color = self.COLORS['ob_bull'] if ob.get('bias') == 'bullish' else self.COLORS['ob_bear']
+                border_color = color
+
             start_idx = ob.get('bar_index', 0)
             if start_idx < len(self.df):
                 start_date = self.df['date'].iloc[start_idx]
                 end_date = self.df['date'].iloc[-1]
-                
+
+                border_width = 2 if is_perfect else (1 if is_mitigated else 0)
+                border_dash = 'dash' if is_mitigated else 'solid'
+
                 self.fig.add_shape(
                     type="rect",
                     x0=start_date,
@@ -570,11 +597,25 @@ class PlotlyChart:
                     y0=ob['low'],
                     y1=ob['high'],
                     fillcolor=color,
-                    line=dict(width=0),
+                    line=dict(width=border_width, color=border_color, dash=border_dash),
                     layer="below",
                     row=1, col=1
                 )
-        
+
+                # Score annotation for Perfect OBs
+                if is_perfect and not is_mitigated:
+                    mid_price = (ob['high'] + ob['low']) / 2
+                    self.fig.add_annotation(
+                        x=start_date,
+                        y=mid_price,
+                        text=f"OB {score}/5",
+                        showarrow=False,
+                        font=dict(color="white", size=9),
+                        bgcolor=border_color,
+                        borderpad=2,
+                        borderwidth=0,
+                    )
+
         return self.fig
     
     def add_fvg(self, fvg_list: List[Dict]):
@@ -608,6 +649,65 @@ class PlotlyChart:
         
         return self.fig
     
+    def add_liquidity_sweeps(
+        self,
+        sweep_bull: pd.Series = None,
+        sweep_bear: pd.Series = None,
+    ):
+        """
+        加入流動性掃蕩標記 (Liquidity Sweeps)
+
+        sweep_bull/sweep_bear: Boolean Series from SMC calculator
+        """
+        if self.fig is None:
+            raise ValueError("請先建立圖表")
+
+        # Bullish sweeps (swept sell-side liquidity)
+        if sweep_bull is not None:
+            points = self.df[sweep_bull]
+            if len(points) > 0:
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=points['date'],
+                        y=points['low'] * 0.995,
+                        mode='markers+text',
+                        name='Liq.Sweep ↑',
+                        text=['$'] * len(points),
+                        textfont=dict(color=self.COLORS.get('sweep_bull', '#ffeb3b'), size=12),
+                        textposition='bottom center',
+                        marker=dict(
+                            symbol='diamond',
+                            color=self.COLORS.get('sweep_bull', '#ffeb3b'),
+                            size=8,
+                        ),
+                    ),
+                    row=1, col=1
+                )
+
+        # Bearish sweeps (swept buy-side liquidity)
+        if sweep_bear is not None:
+            points = self.df[sweep_bear]
+            if len(points) > 0:
+                self.fig.add_trace(
+                    go.Scatter(
+                        x=points['date'],
+                        y=points['high'] * 1.005,
+                        mode='markers+text',
+                        name='Liq.Sweep ↓',
+                        text=['$'] * len(points),
+                        textfont=dict(color=self.COLORS.get('sweep_bear', '#ff6f00'), size=12),
+                        textposition='top center',
+                        marker=dict(
+                            symbol='diamond',
+                            color=self.COLORS.get('sweep_bear', '#ff6f00'),
+                            size=8,
+                        ),
+                    ),
+                    row=1, col=1
+                )
+
+        return self.fig
+
     def add_horizontal_line(self, price: float, label: str, color: str = None):
         """加入水平線（支撐/壓力）"""
         if self.fig is None:
@@ -953,7 +1053,13 @@ def plot_stock_with_indicators(
             chart.add_order_blocks(smc_data['order_blocks'])
         if smc_data.get('fvg'):
             chart.add_fvg(smc_data['fvg'])
-    
+        # Liquidity sweeps
+        if smc_data.get('liquidity_sweep_bull') is not None or smc_data.get('liquidity_sweep_bear') is not None:
+            chart.add_liquidity_sweeps(
+                sweep_bull=smc_data.get('liquidity_sweep_bull'),
+                sweep_bear=smc_data.get('liquidity_sweep_bear'),
+            )
+
     if save_path:
         chart.save(save_path)
     if show:

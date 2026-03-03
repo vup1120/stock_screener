@@ -5,7 +5,7 @@
 """
 
 from .ut_bot import calculate_ut_bot, get_ut_bot_signal, calculate_ema_ribbon
-from .smc import calculate_smc, SMCCalculator
+from .smc import calculate_smc, SMCCalculator, LiquiditySweep
 from .chip_analysis import analyze_chip_data, ChipAnalysisResult, format_chip_data
 from .combo_indicator import calculate_combo, calculate_maxmin
 
@@ -15,6 +15,7 @@ __all__ = [
     'calculate_ema_ribbon',
     'calculate_smc',
     'SMCCalculator',
+    'LiquiditySweep',
     'analyze_chip_data',
     'ChipAnalysisResult',
     'format_chip_data',

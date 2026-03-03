@@ -134,7 +134,7 @@ class StockScreener:
             result['ut_signal'] = 'error'
             result['ut_summary'] = {}
         
-        # 計算 SMC
+        # 計算 SMC（含進階 OB 評分、流動性掃蕩、Fibonacci OTE）
         try:
             smc_df, smc_summary = calculate_smc(
                 df,
@@ -142,12 +142,23 @@ class StockScreener:
                 internal_length=SMC_CONFIG['internal_length'],
                 equal_hl_threshold=SMC_CONFIG['equal_hl_threshold'],
                 order_block_filter=SMC_CONFIG['order_block_filter'],
-                fvg_threshold=SMC_CONFIG['fvg_threshold']
+                fvg_threshold=SMC_CONFIG['fvg_threshold'],
+                enable_liquidity_sweeps=SMC_CONFIG.get('enable_liquidity_sweeps', True),
+                enable_fibonacci_ote=SMC_CONFIG.get('enable_fibonacci_ote', True),
+                enable_ob_scoring=SMC_CONFIG.get('enable_ob_scoring', True),
+                liquidity_sweep_lookback=SMC_CONFIG.get('liquidity_sweep_lookback', 10),
+                fibonacci_ote_low=SMC_CONFIG.get('fibonacci_ote_low', 0.618),
+                fibonacci_ote_high=SMC_CONFIG.get('fibonacci_ote_high', 0.786),
+                ob_score_threshold=SMC_CONFIG.get('ob_score_threshold', 3),
             )
             result['smc_signal'] = smc_summary.get('signal')
             result['smc_trend'] = smc_summary.get('swing_trend')
             result['smc_strength'] = smc_summary.get('signal_strength', 0)
             result['smc_summary'] = smc_summary
+            # 進階 SMC 欄位
+            result['perfect_obs'] = smc_summary.get('perfect_bullish_obs', 0) + smc_summary.get('perfect_bearish_obs', 0)
+            result['best_ob_score'] = smc_summary.get('best_ob_score', 0)
+            result['liquidity_sweeps'] = smc_summary.get('recent_liquidity_sweeps', 0)
         except Exception as e:
             logger.error(f"SMC 計算錯誤 ({stock_id}): {e}")
             result['smc_signal'] = None
@@ -235,6 +246,25 @@ class StockScreener:
         print(f"   趨勢: {result.get('smc_trend', 'N/A')}")
         print(f"   信號: {result.get('smc_signal', 'N/A')}")
         print(f"   強度: {result.get('smc_strength', 0)}")
+        smc_s = result.get('smc_summary', {})
+        if smc_s.get('perfect_bullish_obs', 0) or smc_s.get('perfect_bearish_obs', 0):
+            print(f"   Perfect OB: Bull={smc_s.get('perfect_bullish_obs', 0)} Bear={smc_s.get('perfect_bearish_obs', 0)}")
+        if smc_s.get('best_ob_score', 0) > 0:
+            print(f"   最佳 OB 評分: {smc_s.get('best_ob_score', 0)}/5")
+        if smc_s.get('nearest_perfect_ob'):
+            pob = smc_s['nearest_perfect_ob']
+            tags = []
+            if pob.get('has_liquidity_sweep'):
+                tags.append('Liq.Sweep')
+            if pob.get('in_fibonacci_ote'):
+                tags.append('Fib.OTE')
+            if pob.get('has_clean_structure'):
+                tags.append('Clean')
+            if pob.get('has_impulse_to_bos'):
+                tags.append('Impulse')
+            print(f"   最近 Perfect OB: {pob['bias']} [{', '.join(tags)}]")
+        if smc_s.get('recent_liquidity_sweeps', 0) > 0:
+            print(f"   流動性掃蕩: {smc_s['recent_liquidity_sweeps']} 次")
         
         if result.get('chip_summary'):
             chip = result['chip_summary']
@@ -349,8 +379,9 @@ class StockScreener:
             
             # 選擇要輸出的欄位
             output_cols = [
-                'stock_id', 'price', 'price_change', 
+                'stock_id', 'price', 'price_change',
                 'smc_signal', 'smc_trend', 'smc_strength',
+                'perfect_obs', 'best_ob_score', 'liquidity_sweeps',
                 'ut_signal', 'ut_trend',
                 'chip_signal', 'volume_ratio'
             ]
@@ -459,9 +490,11 @@ def main():
             smc = stock.get('smc_signal', 'N/A')
             ut = stock.get('ut_signal', 'N/A')
             chip = stock.get('chip_signal', 'N/A')
-            
+            ob_score = stock.get('best_ob_score', 0)
+
             change_emoji = '🔴' if change > 0 else ('🟢' if change < 0 else '⚪')
-            print(f"{i:2d}. {stock_id:6s} | {price:8.2f} {change_emoji}{change:+6.2f}% | SMC: {str(smc):12s} | UT: {str(ut):6s} | 籌碼: {str(chip):12s}")
+            ob_tag = f" OB:{ob_score}/5" if ob_score > 0 else ""
+            print(f"{i:2d}. {stock_id:6s} | {price:8.2f} {change_emoji}{change:+6.2f}% | SMC: {str(smc):12s}{ob_tag} | UT: {str(ut):6s} | 籌碼: {str(chip):12s}")
         
         if len(results) > 20:
             print(f"\n... 還有 {len(results) - 20} 檔")

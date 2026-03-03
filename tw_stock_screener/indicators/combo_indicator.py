@@ -101,17 +101,34 @@ def calculate_combo(
     mm_high, mm_low = calculate_maxmin(df, length=mm_length)
     out['maxmin'] = {'mm_high': mm_high, 'mm_low': mm_low}
 
-    # 4. SMC (run calculator so we can pass order_blocks and fvg to chart)
+    # 4. SMC (run calculator so we can pass order_blocks, fvg, sweeps to chart)
     calculator = SMCCalculator(**smc_config)
     smc_df = calculator.calculate(df)
     smc_summary = calculator.get_summary(smc_df)
     ob_list = [
-        {'high': ob.high, 'low': ob.low, 'bar_index': ob.bar_index, 'bias': 'bullish' if ob.bias == TrendBias.BULLISH else 'bearish'}
+        {
+            'high': ob.high, 'low': ob.low, 'bar_index': ob.bar_index,
+            'bias': 'bullish' if ob.bias == TrendBias.BULLISH else 'bearish',
+            'mitigated': ob.mitigated,
+            'confluence_score': ob.confluence_score,
+            'has_liquidity_sweep': ob.has_liquidity_sweep,
+            'in_fibonacci_ote': ob.in_fibonacci_ote,
+            'has_clean_structure': ob.has_clean_structure,
+            'has_impulse_to_bos': ob.has_impulse_to_bos,
+        }
         for ob in calculator.order_blocks[-10:]
     ]
     fvg_list = [
         {'top': fvg.top, 'bottom': fvg.bottom, 'bar_index': fvg.bar_index, 'bias': 'bullish' if fvg.bias == TrendBias.BULLISH else 'bearish'}
         for fvg in calculator.fair_value_gaps[-10:]
+    ]
+    sweep_list = [
+        {
+            'level': s.level, 'swept_level': s.swept_level,
+            'bar_index': s.bar_index,
+            'bias': 'bullish' if s.bias == TrendBias.BULLISH else 'bearish',
+        }
+        for s in calculator.liquidity_sweeps[-10:]
     ]
     out['smc_data'] = {
         'bos_bull': smc_df.get('bos_bull'),
@@ -120,6 +137,9 @@ def calculate_combo(
         'choch_bear': smc_df.get('choch_bear'),
         'order_blocks': ob_list,
         'fvg': fvg_list,
+        'liquidity_sweeps': sweep_list,
+        'liquidity_sweep_bull': smc_df.get('liquidity_sweep_bull'),
+        'liquidity_sweep_bear': smc_df.get('liquidity_sweep_bear'),
     }
     out['smc_summary'] = smc_summary
 

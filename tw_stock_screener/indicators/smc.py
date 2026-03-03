@@ -2,6 +2,7 @@
 SMC (Smart Money Concepts) 指標模組
 ====================================
 根據 LuxAlgo Smart Money Concepts 指標轉換為 Python
+並整合 profittown-sniper-smc 的進階 SMC 分析
 
 包含功能:
 - Swing High/Low 偵測
@@ -11,6 +12,12 @@ SMC (Smart Money Concepts) 指標模組
 - Fair Value Gaps (FVG) 公允價值缺口
 - Equal Highs/Lows 等高/等低
 - Premium/Discount Zones 溢價/折價區
+- Liquidity Sweeps 流動性掃蕩
+- Fibonacci OTE Zone (61.8%-78.6%) 費波納契最佳進場區
+- Clean Structure Validation 清潔結構驗證
+- Impulse from OB Validation OB衝量驗證
+- OB Mitigation Tracking OB消化追蹤
+- Perfect OB Scoring 完美OB評分系統
 """
 
 import pandas as pd
@@ -41,13 +48,19 @@ class Pivot:
 
 @dataclass
 class OrderBlock:
-    """訂單塊資料結構"""
+    """訂單塊資料結構（含進階評分）"""
     high: float
     low: float
     bar_index: int
     bar_time: pd.Timestamp
     bias: TrendBias
     mitigated: bool = False
+    # 進階評分欄位 (from profittown-sniper-smc)
+    has_liquidity_sweep: bool = False
+    in_fibonacci_ote: bool = False
+    has_clean_structure: bool = False
+    has_impulse_to_bos: bool = False
+    confluence_score: int = 0  # 0-5 滿分
 
 
 @dataclass
@@ -59,6 +72,16 @@ class FairValueGap:
     bar_time: pd.Timestamp
     bias: TrendBias
     filled: bool = False
+
+
+@dataclass
+class LiquiditySweep:
+    """流動性掃蕩資料結構"""
+    level: float
+    bar_index: int
+    bar_time: pd.Timestamp
+    bias: TrendBias  # BULLISH = swept lows, BEARISH = swept highs
+    swept_level: float = 0.0
 
 
 @dataclass
@@ -74,8 +97,9 @@ class StructureSignal:
 class SMCCalculator:
     """
     Smart Money Concepts 計算器
+    整合 LuxAlgo 結構分析 + profittown-sniper-smc 進階 OB 評分
     """
-    
+
     def __init__(
         self,
         swing_length: int = 50,
@@ -87,6 +111,14 @@ class SMCCalculator:
         show_swing_structure: bool = True,
         show_order_blocks: bool = True,
         show_fvg: bool = True,
+        # 進階 SMC 參數 (from profittown-sniper-smc)
+        enable_liquidity_sweeps: bool = True,
+        enable_fibonacci_ote: bool = True,
+        enable_ob_scoring: bool = True,
+        liquidity_sweep_lookback: int = 10,
+        fibonacci_ote_low: float = 0.618,
+        fibonacci_ote_high: float = 0.786,
+        ob_score_threshold: int = 3,
     ):
         self.swing_length = swing_length
         self.internal_length = internal_length
@@ -97,19 +129,29 @@ class SMCCalculator:
         self.show_swing_structure = show_swing_structure
         self.show_order_blocks = show_order_blocks
         self.show_fvg = show_fvg
-        
+
+        # 進階 SMC 參數
+        self.enable_liquidity_sweeps = enable_liquidity_sweeps
+        self.enable_fibonacci_ote = enable_fibonacci_ote
+        self.enable_ob_scoring = enable_ob_scoring
+        self.liquidity_sweep_lookback = liquidity_sweep_lookback
+        self.fibonacci_ote_low = fibonacci_ote_low
+        self.fibonacci_ote_high = fibonacci_ote_high
+        self.ob_score_threshold = ob_score_threshold
+
         # 初始化狀態
         self.swing_high = Pivot(level=0, bar_index=0)
         self.swing_low = Pivot(level=0, bar_index=0)
         self.internal_high = Pivot(level=0, bar_index=0)
         self.internal_low = Pivot(level=0, bar_index=0)
-        
+
         self.swing_trend = TrendBias.NEUTRAL
         self.internal_trend = TrendBias.NEUTRAL
-        
+
         self.order_blocks: List[OrderBlock] = []
         self.fair_value_gaps: List[FairValueGap] = []
         self.structure_signals: List[StructureSignal] = []
+        self.liquidity_sweeps: List[LiquiditySweep] = []
     
     def _find_swing_points(self, df: pd.DataFrame, lookback: int) -> pd.DataFrame:
         """
@@ -176,28 +218,28 @@ class SMCCalculator:
         執行完整的 SMC 計算
         """
         df = df.copy()
-        
+
         # 計算 ATR
         df['atr'] = self._calculate_atr(df)
         df['volatility'] = df['atr'] if self.order_block_filter == 'atr' else (df['high'] - df['low']).expanding().mean()
-        
+
         # 找出 Swing 結構
         df = self._find_swing_points(df, self.swing_length)
         df = df.rename(columns={
             'swing_high': 'swing_high_point',
             'swing_low': 'swing_low_point'
         })
-        
+
         # 找出 Internal 結構
         df_internal = self._find_swing_points(df, self.internal_length)
         df['internal_high_point'] = df_internal['swing_high']
         df['internal_low_point'] = df_internal['swing_low']
         df['internal_high_level'] = df_internal['swing_high_level']
         df['internal_low_level'] = df_internal['swing_low_level']
-        
+
         # 偵測腿部方向
         df = self._detect_leg(df, self.swing_length)
-        
+
         # 初始化信號欄位
         df['bos_bull'] = False
         df['bos_bear'] = False
@@ -209,22 +251,35 @@ class SMCCalculator:
         df['internal_choch_bear'] = False
         df['swing_trend'] = 0
         df['internal_trend'] = 0
-        
+
         # 偵測結構突破
         df = self._detect_structure(df)
-        
+
         # 偵測 Order Blocks
         df = self._detect_order_blocks(df)
-        
+
         # 偵測 FVG
         df = self._detect_fvg(df)
-        
+
         # 偵測 Equal Highs/Lows
         df = self._detect_equal_hl(df)
-        
+
         # 計算 Premium/Discount 區域
         df = self._calculate_zones(df)
-        
+
+        # === 進階 SMC 分析 (from profittown-sniper-smc) ===
+
+        # 偵測流動性掃蕩
+        if self.enable_liquidity_sweeps:
+            df = self._detect_liquidity_sweeps(df)
+
+        # OB 消化追蹤
+        self._track_ob_mitigation(df)
+
+        # OB 進階評分 (Fibonacci OTE, Clean Structure, Impulse, Liquidity Sweep)
+        if self.enable_ob_scoring:
+            self._score_order_blocks(df)
+
         return df
     
     def _detect_structure(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -475,37 +530,263 @@ class SMCCalculator:
         # 找最近的 Swing High 和 Swing Low
         swing_highs = df[df['swing_high_point']]['high']
         swing_lows = df[df['swing_low_point']]['low']
-        
+
         if len(swing_highs) > 0 and len(swing_lows) > 0:
             recent_high = swing_highs.iloc[-1] if len(swing_highs) > 0 else df['high'].max()
             recent_low = swing_lows.iloc[-1] if len(swing_lows) > 0 else df['low'].min()
-            
+
             equilibrium = (recent_high + recent_low) / 2
-            
+
             df['zone_high'] = recent_high
             df['zone_low'] = recent_low
             df['equilibrium'] = equilibrium
             df['premium_zone'] = df['close'] > equilibrium
             df['discount_zone'] = df['close'] < equilibrium
-            
+
             # 目前價格在 Premium (0.5-1) 還是 Discount (0-0.5) 區
             df['zone_position'] = (df['close'] - recent_low) / (recent_high - recent_low) if recent_high != recent_low else 0.5
-        
+
         return df
-    
+
+    # ================================================================
+    # 進階 SMC 分析方法 (from profittown-sniper-smc)
+    # ================================================================
+
+    def _detect_liquidity_sweeps(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        偵測流動性掃蕩 (Liquidity Sweeps)
+
+        流動性掃蕩：價格短暫突破前方 swing high/low（掃止損單），
+        然後立刻反轉回來。這是機構收集流動性的典型手法。
+
+        Bullish sweep: 下影線穿越近期 swing low 後反彈
+        Bearish sweep: 上影線穿越近期 swing high 後回落
+        """
+        df['liquidity_sweep_bull'] = False
+        df['liquidity_sweep_bear'] = False
+        df['sweep_level'] = np.nan
+
+        lookback = self.liquidity_sweep_lookback
+
+        for i in range(lookback + 1, len(df)):
+            search_range = df.iloc[max(0, i - lookback):i]
+            if search_range.empty:
+                continue
+
+            swing_high = search_range['high'].max()
+            swing_low = search_range['low'].min()
+
+            current_high = df['high'].iloc[i]
+            current_low = df['low'].iloc[i]
+            current_close = df['close'].iloc[i]
+            current_open = df['open'].iloc[i]
+
+            # Bearish sweep: wick above recent high, close back below
+            # (swept buy-side liquidity, then reversed)
+            if current_high > swing_high and current_close < swing_high:
+                df.loc[df.index[i], 'liquidity_sweep_bear'] = True
+                df.loc[df.index[i], 'sweep_level'] = swing_high
+                self.liquidity_sweeps.append(LiquiditySweep(
+                    level=current_high,
+                    bar_index=i,
+                    bar_time=df['date'].iloc[i] if 'date' in df.columns else None,
+                    bias=TrendBias.BEARISH,
+                    swept_level=swing_high,
+                ))
+
+            # Bullish sweep: wick below recent low, close back above
+            # (swept sell-side liquidity, then reversed)
+            if current_low < swing_low and current_close > swing_low:
+                df.loc[df.index[i], 'liquidity_sweep_bull'] = True
+                df.loc[df.index[i], 'sweep_level'] = swing_low
+                self.liquidity_sweeps.append(LiquiditySweep(
+                    level=current_low,
+                    bar_index=i,
+                    bar_time=df['date'].iloc[i] if 'date' in df.columns else None,
+                    bias=TrendBias.BULLISH,
+                    swept_level=swing_low,
+                ))
+
+        return df
+
+    def _track_ob_mitigation(self, df: pd.DataFrame) -> None:
+        """
+        追蹤 Order Block 消化 (Mitigation)
+
+        當價格回到 OB 區間並穿透時，該 OB 被視為已消化 (mitigated)，
+        不再具有支撐/壓力效力。
+        """
+        for ob in self.order_blocks:
+            if ob.mitigated:
+                continue
+
+            # 只檢查 OB 之後的 K 線
+            for i in range(ob.bar_index + 1, len(df)):
+                if ob.bias == TrendBias.BULLISH:
+                    # Bullish OB mitigated when price closes below OB low
+                    if df['close'].iloc[i] < ob.low:
+                        ob.mitigated = True
+                        break
+                else:
+                    # Bearish OB mitigated when price closes above OB high
+                    if df['close'].iloc[i] > ob.high:
+                        ob.mitigated = True
+                        break
+
+    def _check_liquidity_sweep_for_ob(self, df: pd.DataFrame, ob: OrderBlock) -> bool:
+        """
+        檢查 OB 之前是否有流動性掃蕩
+        (ref: profittown-sniper-smc/shared/rules/liquidity.py)
+        """
+        lookback = self.liquidity_sweep_lookback
+        search_start = max(0, ob.bar_index - lookback)
+        search_df = df.iloc[search_start:ob.bar_index]
+
+        if search_df.empty or ob.bar_index < 1:
+            return False
+
+        swing_high = search_df['high'].max()
+        swing_low = search_df['low'].min()
+
+        # The candle just before the OB
+        pre_ob_idx = ob.bar_index - 1
+        if pre_ob_idx < 0:
+            return False
+
+        sweep_candle = df.iloc[pre_ob_idx]
+
+        if ob.bias == TrendBias.BULLISH:
+            # Bullish OB: check if candle before OB wicked below recent low
+            return sweep_candle['low'] < swing_low
+        else:
+            # Bearish OB: check if candle before OB wicked above recent high
+            return sweep_candle['high'] > swing_high
+
+    def _check_fibonacci_ote(self, df: pd.DataFrame, ob: OrderBlock) -> bool:
+        """
+        檢查 OB 是否在 Fibonacci OTE Zone (61.8%-78.6%)
+        (ref: profittown-sniper-smc/shared/rules/fibonacci.py)
+
+        OTE (Optimal Trade Entry) 是 ICT 概念中的最佳進場區域。
+        """
+        swing_high = df['high'].max()
+        swing_low = df['low'].min()
+        price_range = swing_high - swing_low
+
+        if price_range <= 0:
+            return False
+
+        if ob.bias == TrendBias.BULLISH:
+            # Bullish OB: should be in the lower retracement zone
+            fib_618 = swing_high - (price_range * self.fibonacci_ote_low)
+            fib_786 = swing_high - (price_range * self.fibonacci_ote_high)
+            return fib_786 <= ob.high <= fib_618
+        else:
+            # Bearish OB: should be in the upper retracement zone
+            fib_618 = swing_low + (price_range * self.fibonacci_ote_low)
+            fib_786 = swing_low + (price_range * self.fibonacci_ote_high)
+            return fib_618 <= ob.low <= fib_786
+
+    def _check_clean_structure(self, df: pd.DataFrame, ob: OrderBlock) -> bool:
+        """
+        檢查 OB 後是否有 FVG/Imbalance（清潔結構 = 強力衝量）
+        (ref: profittown-sniper-smc/shared/rules/structure.py - check_clean_structure)
+
+        如果 OB 後面伴隨 FVG，表示機構資金造成了價格失衡，
+        是高品質 OB 的特徵。
+        """
+        ob_idx = ob.bar_index
+
+        if ob_idx < 1 or ob_idx + 1 >= len(df):
+            return False
+
+        candle_before_ob = df.iloc[ob_idx - 1]
+        candle_after_ob = df.iloc[ob_idx + 1]
+
+        # Bullish FVG after OB: candle after's low > candle before's high
+        bullish_fvg = candle_after_ob['low'] > candle_before_ob['high']
+
+        # Bearish FVG after OB: candle after's high < candle before's low
+        bearish_fvg = candle_after_ob['high'] < candle_before_ob['low']
+
+        return bullish_fvg or bearish_fvg
+
+    def _check_impulse_from_ob(self, df: pd.DataFrame, ob: OrderBlock) -> bool:
+        """
+        檢查 OB 之後的 K 線是否確實導致了結構突破 (BOS)
+        (ref: profittown-sniper-smc/shared/rules/ob_filters.py - check_impulse_from_ob)
+        """
+        impulse_candles = df.iloc[ob.bar_index + 1:]
+        if impulse_candles.empty:
+            return False
+
+        # Find the nearest BOS after this OB
+        for sig in self.structure_signals:
+            if sig.bar_index <= ob.bar_index:
+                continue
+            if ob.bias == TrendBias.BULLISH and sig.bias == TrendBias.BULLISH:
+                # Check if any close after OB exceeded the BOS level
+                return impulse_candles['close'].max() > sig.level
+            elif ob.bias == TrendBias.BEARISH and sig.bias == TrendBias.BEARISH:
+                return impulse_candles['close'].min() < sig.level
+
+        return False
+
+    def _score_order_blocks(self, df: pd.DataFrame) -> None:
+        """
+        為每個 Order Block 計算 confluence 評分 (0-5)
+        (ref: profittown-sniper-smc/shared/utils/risk_manager.py - is_perfect_ob)
+
+        評分項目：
+        1. 未被消化 (unmitigated)
+        2. 流動性掃蕩 (liquidity sweep before OB)
+        3. Fibonacci OTE Zone (61.8%-78.6%)
+        4. 清潔結構 (FVG adjacent to OB)
+        5. 衝量驗證 (impulse from OB led to BOS)
+        """
+        for ob in self.order_blocks:
+            score = 0
+
+            # 1. Unmitigated check
+            if not ob.mitigated:
+                score += 1
+
+            # 2. Liquidity sweep
+            ob.has_liquidity_sweep = self._check_liquidity_sweep_for_ob(df, ob)
+            if ob.has_liquidity_sweep:
+                score += 1
+
+            # 3. Fibonacci OTE
+            if self.enable_fibonacci_ote:
+                ob.in_fibonacci_ote = self._check_fibonacci_ote(df, ob)
+                if ob.in_fibonacci_ote:
+                    score += 1
+
+            # 4. Clean structure
+            ob.has_clean_structure = self._check_clean_structure(df, ob)
+            if ob.has_clean_structure:
+                score += 1
+
+            # 5. Impulse to BOS
+            ob.has_impulse_to_bos = self._check_impulse_from_ob(df, ob)
+            if ob.has_impulse_to_bos:
+                score += 1
+
+            ob.confluence_score = score
+
     def get_summary(self, df: pd.DataFrame) -> Dict:
         """
-        取得 SMC 分析摘要
+        取得 SMC 分析摘要（含進階 OB 評分與流動性掃蕩）
         """
         if len(df) < 2:
             return {'error': 'Insufficient data'}
-        
+
         last_row = df.iloc[-1]
-        
+
         # 找最近的信號
         recent_signals = []
         lookback = 10
-        
+
         for i in range(max(0, len(df)-lookback), len(df)):
             row = df.iloc[i]
             if row.get('bos_bull', False):
@@ -516,25 +797,66 @@ class SMCCalculator:
                 recent_signals.append({'type': 'CHoCH', 'bias': 'bullish', 'index': i})
             if row.get('choch_bear', False):
                 recent_signals.append({'type': 'CHoCH', 'bias': 'bearish', 'index': i})
-        
+
         # 判斷主信號
         last_signal = recent_signals[-1] if recent_signals else None
-        
+
         signal = None
         signal_strength = 0
-        
+
         if last_signal:
             signal = f"{last_signal['type']}_{last_signal['bias'][:4]}"
             signal_strength = 90 if last_signal['type'] == 'CHoCH' else 70
-        
+
         # Order Blocks 統計
-        bullish_ob_count = len([ob for ob in self.order_blocks if ob.bias == TrendBias.BULLISH and not ob.mitigated])
-        bearish_ob_count = len([ob for ob in self.order_blocks if ob.bias == TrendBias.BEARISH and not ob.mitigated])
-        
+        active_bull_obs = [ob for ob in self.order_blocks if ob.bias == TrendBias.BULLISH and not ob.mitigated]
+        active_bear_obs = [ob for ob in self.order_blocks if ob.bias == TrendBias.BEARISH and not ob.mitigated]
+        bullish_ob_count = len(active_bull_obs)
+        bearish_ob_count = len(active_bear_obs)
+
         # FVG 統計
         bullish_fvg_count = len([fvg for fvg in self.fair_value_gaps if fvg.bias == TrendBias.BULLISH and not fvg.filled])
         bearish_fvg_count = len([fvg for fvg in self.fair_value_gaps if fvg.bias == TrendBias.BEARISH and not fvg.filled])
-        
+
+        # === 進階 SMC 統計 ===
+
+        # Perfect OB 統計 (confluence_score >= threshold)
+        perfect_bull_obs = [ob for ob in active_bull_obs if ob.confluence_score >= self.ob_score_threshold]
+        perfect_bear_obs = [ob for ob in active_bear_obs if ob.confluence_score >= self.ob_score_threshold]
+
+        # 最近的 Perfect OB
+        nearest_perfect_ob = None
+        if perfect_bull_obs or perfect_bear_obs:
+            all_perfect = perfect_bull_obs + perfect_bear_obs
+            all_perfect.sort(key=lambda ob: ob.bar_index, reverse=True)
+            best = all_perfect[0]
+            nearest_perfect_ob = {
+                'bias': 'bullish' if best.bias == TrendBias.BULLISH else 'bearish',
+                'high': best.high,
+                'low': best.low,
+                'score': best.confluence_score,
+                'has_liquidity_sweep': best.has_liquidity_sweep,
+                'in_fibonacci_ote': best.in_fibonacci_ote,
+                'has_clean_structure': best.has_clean_structure,
+                'has_impulse_to_bos': best.has_impulse_to_bos,
+            }
+
+        # 最佳 active OB 評分
+        best_ob_score = 0
+        if active_bull_obs:
+            best_ob_score = max(best_ob_score, max(ob.confluence_score for ob in active_bull_obs))
+        if active_bear_obs:
+            best_ob_score = max(best_ob_score, max(ob.confluence_score for ob in active_bear_obs))
+
+        # 流動性掃蕩統計
+        recent_sweeps = [s for s in self.liquidity_sweeps if s.bar_index >= len(df) - lookback]
+
+        # 信號強度加分：如果有 Perfect OB 或 liquidity sweep 配合，強度更高
+        if signal_strength > 0 and nearest_perfect_ob:
+            signal_strength = min(100, signal_strength + nearest_perfect_ob['score'] * 2)
+        if signal_strength > 0 and recent_sweeps:
+            signal_strength = min(100, signal_strength + 5)
+
         return {
             'swing_trend': 'bullish' if last_row.get('swing_trend', 0) > 0 else ('bearish' if last_row.get('swing_trend', 0) < 0 else 'neutral'),
             'internal_trend': 'bullish' if last_row.get('internal_trend', 0) > 0 else ('bearish' if last_row.get('internal_trend', 0) < 0 else 'neutral'),
@@ -551,7 +873,18 @@ class SMCCalculator:
             'equilibrium': last_row.get('equilibrium', 0),
             'equal_high': last_row.get('equal_high', False),
             'equal_low': last_row.get('equal_low', False),
-            'current_price': last_row['close']
+            'current_price': last_row['close'],
+            # 進階 SMC 欄位
+            'perfect_bullish_obs': len(perfect_bull_obs),
+            'perfect_bearish_obs': len(perfect_bear_obs),
+            'best_ob_score': best_ob_score,
+            'nearest_perfect_ob': nearest_perfect_ob,
+            'recent_liquidity_sweeps': len(recent_sweeps),
+            'liquidity_sweeps': [
+                {'bias': 'bullish' if s.bias == TrendBias.BULLISH else 'bearish',
+                 'level': s.level, 'swept_level': s.swept_level, 'bar_index': s.bar_index}
+                for s in recent_sweeps[-5:]
+            ],
         }
 
 
@@ -567,7 +900,16 @@ def calculate_smc(
 ) -> Tuple[pd.DataFrame, Dict]:
     """
     計算 SMC 指標的便捷函數
-    
+
+    支援所有 SMCCalculator 參數，包含進階 SMC 參數：
+    - enable_liquidity_sweeps: 啟用流動性掃蕩偵測 (default: True)
+    - enable_fibonacci_ote: 啟用 Fibonacci OTE 區域驗證 (default: True)
+    - enable_ob_scoring: 啟用 OB 進階評分 (default: True)
+    - liquidity_sweep_lookback: 流動性掃蕩回顧期 (default: 10)
+    - fibonacci_ote_low: Fibonacci OTE 下限 (default: 0.618)
+    - fibonacci_ote_high: Fibonacci OTE 上限 (default: 0.786)
+    - ob_score_threshold: Perfect OB 最低分數 (default: 3)
+
     返回:
     - df: 包含 SMC 指標的 DataFrame
     - summary: SMC 分析摘要
@@ -577,10 +919,10 @@ def calculate_smc(
         internal_length=internal_length,
         **kwargs
     )
-    
+
     result_df = calculator.calculate(df)
     summary = calculator.get_summary(result_df)
-    
+
     return result_df, summary
 
 
@@ -589,20 +931,20 @@ def calculate_smc(
 # ============================================================
 
 def test_smc():
-    """測試 SMC 計算"""
+    """測試 SMC 計算（含進階功能）"""
     np.random.seed(42)
     dates = pd.date_range(start='2024-01-01', periods=200, freq='D')
-    
+
     # 模擬有趨勢的價格走勢
     trend = np.cumsum(np.random.randn(200) * 0.5)
     noise = np.random.randn(200) * 2
     close = 100 + trend + noise
-    
+
     high = close + np.abs(np.random.randn(200)) * 1.5
     low = close - np.abs(np.random.randn(200)) * 1.5
     open_price = close + np.random.randn(200) * 0.5
     volume = np.random.randint(1000000, 5000000, 200)
-    
+
     df = pd.DataFrame({
         'date': dates,
         'open': open_price,
@@ -611,15 +953,28 @@ def test_smc():
         'close': close,
         'volume': volume
     })
-    
-    # 計算 SMC
-    result_df, summary = calculate_smc(df, swing_length=20, internal_length=5)
-    
+
+    # 計算 SMC（含進階功能）
+    result_df, summary = calculate_smc(
+        df, swing_length=20, internal_length=5,
+        enable_liquidity_sweeps=True,
+        enable_fibonacci_ote=True,
+        enable_ob_scoring=True,
+    )
+
     print("SMC 計算結果：")
     print("\n結構信號：")
     signal_cols = ['date', 'close', 'bos_bull', 'bos_bear', 'choch_bull', 'choch_bear', 'swing_trend']
     print(result_df[result_df['bos_bull'] | result_df['bos_bear'] | result_df['choch_bull'] | result_df['choch_bear']][signal_cols].tail(10))
-    
+
+    print("\n流動性掃蕩：")
+    sweep_cols = ['date', 'close', 'liquidity_sweep_bull', 'liquidity_sweep_bear', 'sweep_level']
+    sweep_rows = result_df[result_df['liquidity_sweep_bull'] | result_df['liquidity_sweep_bear']]
+    if len(sweep_rows) > 0:
+        print(sweep_rows[sweep_cols].tail(10))
+    else:
+        print("  (無偵測到流動性掃蕩)")
+
     print("\n\nSMC 摘要：")
     for key, value in summary.items():
         print(f"  {key}: {value}")

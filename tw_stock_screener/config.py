@@ -45,6 +45,14 @@ SMC_CONFIG = {
     'order_block_filter': 'atr',  # 'atr' or 'range'
     'fvg_threshold': True,        # 自動閾值
     'equal_hl_threshold': 0.1,    # Equal High/Low 閾值
+    # 進階 SMC 參數 (from profittown-sniper-smc)
+    'enable_liquidity_sweeps': True,   # 啟用流動性掃蕩偵測
+    'enable_fibonacci_ote': True,      # 啟用 Fibonacci OTE 區域驗證
+    'enable_ob_scoring': True,         # 啟用 Order Block 進階評分
+    'liquidity_sweep_lookback': 10,    # 流動性掃蕩回顧期（K 線數）
+    'fibonacci_ote_low': 0.618,        # Fibonacci OTE 下限
+    'fibonacci_ote_high': 0.786,       # Fibonacci OTE 上限
+    'ob_score_threshold': 3,           # Perfect OB 最低分數 (0-5)
 }
 
 # EMA Ribbon 參數
