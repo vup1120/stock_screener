@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+tw_stock_screener/logs/
+
+# API keys / secrets
+.env
+config_local.py
+
+# OS
+.DS_Store
+Thumbs.db

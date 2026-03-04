@@ -1,0 +1,83 @@
+name: Update Stock Data Cache
+
+on:
+  # 每天台灣時間下午 2:30（UTC 06:30）收盤後自動執行
+  schedule:
+    - cron: '30 6 * * 1-5'   # 週一至週五
+
+  # PR 合併到 main 時立即執行一次（取得最新資料）
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'tw_stock_screener/data/**'   # 避免 data commit 再次觸發
+
+  # 允許手動觸發（可指定股票代碼 + 分支）
+  workflow_dispatch:
+    inputs:
+      stocks:
+        description: '股票代碼，空格分隔（留空 = 預設清單）'
+        required: false
+        default: ''
+      days:
+        description: '抓取天數'
+        required: false
+        default: '180'
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # 取得完整 git history 以利 push
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: tw_stock_screener/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy requests yfinance plotly
+
+      - name: Fetch live stock data via APIs
+        working-directory: tw_stock_screener
+        env:
+          GITHUB_ACTIONS: "true"
+        run: |
+          STOCKS="${{ github.event.inputs.stocks }}"
+          DAYS="${{ github.event.inputs.days }}"
+          DAYS="${DAYS:-180}"
+
+          if [ -n "$STOCKS" ]; then
+            echo "📥 Fetching custom stocks: $STOCKS"
+            python fetch_and_cache.py --days "$DAYS" $STOCKS
+          else
+            echo "📥 Fetching default stock list"
+            python fetch_and_cache.py --days "$DAYS" 2330 2317 2454 2308 2412 3008 0050 0056
+          fi
+
+      - name: Commit and push updated CSV files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tw_stock_screener/data/*.csv
+          if git diff --cached --quiet; then
+            echo "✅ Data already up to date — nothing to commit"
+          else
+            ROWS=$(git diff --cached --stat | grep '\.csv' | awk '{sum += $3} END {print sum}')
+            DATE=$(TZ='Asia/Taipei' date '+%Y-%m-%d %H:%M')
+            git commit -m "chore: auto-update stock data [${DATE} TST, ~${ROWS} rows changed]"
+            git push
+            echo "✅ Pushed updated CSV cache to repo"
+          fi
