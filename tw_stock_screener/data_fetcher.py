@@ -1,7 +1,8 @@
 """
 資料抓取模組 - 台股/美股資料來源
 ================================
-支援：證交所 API、FinMind、yfinance
+支援：證交所 API、FinMind、yfinance、本地 CSV 快取
+當 API 因網路限制無法連線時，自動使用本地快取資料。
 """
 
 import pandas as pd
@@ -10,6 +11,7 @@ import requests
 from datetime import datetime, timedelta
 import time
 import json
+import os
 from typing import Optional, List, Dict
 import logging
 
@@ -24,6 +26,9 @@ except Exception:
 # 設定 logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# 快取目錄
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 
 
 class TWSEDataFetcher:
@@ -353,50 +358,215 @@ class YFinanceDataFetcher:
             return None
 
 
+class GitHubRawDataFetcher:
+    """
+    從 GitHub Raw Content 下載 CSV 快取。
+
+    為什麼有用？
+    ─────────────────────────────────────────────────────────────────
+    本系統的 GitHub Actions 工作流（.github/workflows/update_data.yml）
+    每天自動在 GitHub 上執行 fetch_and_cache.py，並將最新的
+    data/<stock_id>_cache.csv 提交回倉庫。
+
+    由於 raw.githubusercontent.com 被此受限環境的出口代理白名單允許，
+    即使 TWSE / Yahoo Finance / FinMind 被封鎖，也能透過 GitHub Raw URL
+    取得每日更新的股價資料。
+
+    設定方式（擇一）：
+    1. 環境變數: export STOCK_DATA_GITHUB_REPO=owner/repo
+    2. 環境變數: export STOCK_DATA_GITHUB_BRANCH=main
+    3. 直接傳入 owner/repo 字串給建構子
+    ─────────────────────────────────────────────────────────────────
+    """
+
+    RAW_BASE = "https://raw.githubusercontent.com"
+    DEFAULT_REPO   = os.environ.get("STOCK_DATA_GITHUB_REPO",   "vup1120/stock_screener")
+    DEFAULT_BRANCH = os.environ.get("STOCK_DATA_GITHUB_BRANCH", "main")
+
+    def __init__(self, repo: str = None, branch: str = None):
+        self.repo   = repo   or self.DEFAULT_REPO
+        self.branch = branch or self.DEFAULT_BRANCH
+
+    def _url(self, stock_id: str) -> str:
+        return (
+            f"{self.RAW_BASE}/{self.repo}/{self.branch}"
+            f"/tw_stock_screener/data/{stock_id}_cache.csv"
+        )
+
+    def get_stock_data(self, stock_id: str, days: int = 120) -> Optional[pd.DataFrame]:
+        """
+        從 GitHub Raw URL 下載最新 CSV 快取。
+        該 CSV 由 GitHub Actions 工作流每日自動更新。
+        """
+        url = self._url(stock_id)
+        try:
+            resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                logger.warning(f"GitHub raw fetch HTTP {resp.status_code} for {stock_id}: {url}")
+                return None
+            from io import StringIO
+            df = pd.read_csv(StringIO(resp.text))
+            df['date'] = pd.to_datetime(df['date'])
+            required = {'date', 'open', 'high', 'low', 'close', 'volume'}
+            if not required.issubset(df.columns):
+                logger.warning(f"GitHub raw CSV for {stock_id} missing columns")
+                return None
+            df = df.sort_values('date').reset_index(drop=True)
+            logger.info(f"GitHub raw: fetched {len(df)} rows for {stock_id} from {url}")
+            return df.tail(days).reset_index(drop=True)
+        except Exception as e:
+            logger.warning(f"GitHub raw fetch error for {stock_id}: {e}")
+            return None
+
+
+class LocalCSVDataFetcher:
+    """
+    本地 CSV 快取資料來源
+    - 當外部 API 無法連線時作為最終備援
+    - 同時在 API 成功後自動儲存快取供離線使用
+    - 快取路徑: tw_stock_screener/data/<stock_id>_cache.csv
+    """
+
+    def __init__(self, cache_dir: str = CACHE_DIR):
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+
+    def cache_path(self, stock_id: str) -> str:
+        return os.path.join(self.cache_dir, f"{stock_id}_cache.csv")
+
+    def save(self, stock_id: str, df: pd.DataFrame) -> None:
+        """儲存資料到本地 CSV 快取"""
+        try:
+            path = self.cache_path(stock_id)
+            df_save = df.copy()
+            df_save['date'] = pd.to_datetime(df_save['date']).dt.strftime('%Y-%m-%d')
+            df_save.to_csv(path, index=False)
+            logger.info(f"Cached {len(df)} rows for {stock_id} → {path}")
+        except Exception as e:
+            logger.warning(f"Failed to save cache for {stock_id}: {e}")
+
+    def load(self, stock_id: str, days: int = 120) -> Optional[pd.DataFrame]:
+        """從本地 CSV 快取載入資料"""
+        path = self.cache_path(stock_id)
+        if not os.path.exists(path):
+            return None
+        try:
+            df = pd.read_csv(path)
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.sort_values('date').reset_index(drop=True)
+            # 只回傳指定天數
+            return df.tail(days).reset_index(drop=True)
+        except Exception as e:
+            logger.warning(f"Failed to load cache for {stock_id}: {e}")
+            return None
+
+    def is_fresh(self, stock_id: str, max_age_days: int = 1) -> bool:
+        """快取是否在 max_age_days 天內"""
+        path = self.cache_path(stock_id)
+        if not os.path.exists(path):
+            return False
+        mtime = os.path.getmtime(path)
+        age = (time.time() - mtime) / 86400
+        return age < max_age_days
+
+
 class UnifiedDataFetcher:
     """
     統一資料抓取介面
-    自動選擇最佳資料來源
+    自動選擇最佳資料來源，並快取到本地 CSV。
+
+    資料來源優先順序（完全自動）：
+      1. 本地 CSV 快取  — 若當天已更新，立即使用（零延遲）
+      2. TWSE / FinMind / yfinance — 直接呼叫外部 API（需網路）
+      3. GitHub Raw CSV — 從 GitHub repo 的 data/ 目錄下載 CSV
+         raw.githubusercontent.com 在此受限環境的代理白名單中可存取。
+         CSV 由 .github/workflows/update_data.yml 每日自動更新。
+      4. 本地 CSV 快取（舊版備援）— 即使快取過期，仍有資料可用
     """
-    
-    def __init__(self, tw_source: str = 'twse', finmind_token: str = ""):
+
+    def __init__(self, tw_source: str = 'twse', finmind_token: str = "",
+                 github_repo: str = None, github_branch: str = None):
         self.tw_source = tw_source
-        self.twse = TWSEDataFetcher()
-        self.finmind = FinMindDataFetcher(finmind_token)
-        self.yfinance = YFinanceDataFetcher()
-    
+        self.twse      = TWSEDataFetcher()
+        self.finmind   = FinMindDataFetcher(finmind_token)
+        self.yfinance  = YFinanceDataFetcher()
+        self.github    = GitHubRawDataFetcher(github_repo, github_branch)
+        self.cache     = LocalCSVDataFetcher()
+
     def get_tw_stock_data(self, stock_id: str, days: int = 120) -> Optional[pd.DataFrame]:
         """
-        取得台股資料（自動選擇來源）
+        取得台股資料（自動選擇來源 + GitHub Raw + 本地快取備援）
         """
+        # 1. 若當天快取已存在，直接使用（跳過所有網路請求）
+        if self.cache.is_fresh(stock_id, max_age_days=1):
+            cached = self.cache.load(stock_id, days)
+            if cached is not None and len(cached) >= 20:
+                logger.info(f"Using fresh local cache for {stock_id}")
+                return cached
+
         df = None
-        
-        if self.tw_source == 'twse':
-            df = self.twse.get_stock_data(stock_id, days)
-        elif self.tw_source == 'finmind':
-            df = self.finmind.get_stock_data(stock_id, days)
-        
-        # 備用方案
-        if df is None or len(df) < 30:
-            df = self.yfinance.get_stock_data(stock_id, days, market='TW')
-        
+
+        # 2. 嘗試各外部 API 來源
+        api_sources = {
+            'twse':    [('TWSE',    lambda: self.twse.get_stock_data(stock_id, days)),
+                        ('FinMind', lambda: self.finmind.get_stock_data(stock_id, days)),
+                        ('yfinance',lambda: self.yfinance.get_stock_data(stock_id, days, market='TW'))],
+            'finmind': [('FinMind', lambda: self.finmind.get_stock_data(stock_id, days)),
+                        ('TWSE',    lambda: self.twse.get_stock_data(stock_id, days)),
+                        ('yfinance',lambda: self.yfinance.get_stock_data(stock_id, days, market='TW'))],
+            'yfinance':[('yfinance',lambda: self.yfinance.get_stock_data(stock_id, days, market='TW')),
+                        ('TWSE',    lambda: self.twse.get_stock_data(stock_id, days)),
+                        ('FinMind', lambda: self.finmind.get_stock_data(stock_id, days))],
+        }
+        sources = api_sources.get(self.tw_source, api_sources['twse'])
+
+        for name, fetcher_fn in sources:
+            try:
+                result = fetcher_fn()
+                if result is not None and len(result) >= 20:
+                    logger.info(f"Fetched {len(result)} rows for {stock_id} via {name}")
+                    df = result
+                    self.cache.save(stock_id, df)  # 成功後存快取
+                    break
+            except Exception as e:
+                logger.warning(f"{name} failed for {stock_id}: {e}")
+
+        # 3. 所有直接 API 失敗 → GitHub Raw（raw.githubusercontent.com 在代理白名單中）
+        if df is None or len(df) < 20:
+            logger.info(f"Direct APIs failed; trying GitHub raw for {stock_id}")
+            try:
+                result = self.github.get_stock_data(stock_id, days)
+                if result is not None and len(result) >= 20:
+                    logger.info(f"GitHub raw: {len(result)} rows for {stock_id}")
+                    df = result
+                    self.cache.save(stock_id, df)  # 存到本地快取
+            except Exception as e:
+                logger.warning(f"GitHub raw failed for {stock_id}: {e}")
+
+        # 4. 都失敗 → 使用任何現有的本地快取（即使已過期）
+        if df is None or len(df) < 20:
+            cached = self.cache.load(stock_id, days)
+            if cached is not None and len(cached) >= 20:
+                logger.info(f"All sources failed; using stale local cache for {stock_id}")
+                df = cached
+
         return df
-    
+
     def get_us_stock_data(self, stock_id: str, days: int = 120) -> Optional[pd.DataFrame]:
         """
         取得美股資料
         """
         return self.yfinance.get_stock_data(stock_id, days, market='US')
-    
+
     def get_institutional_trading(self, stock_id: str, days: int = 30) -> Optional[pd.DataFrame]:
         """
         取得三大法人買賣超
         """
         df = self.twse.get_institutional_trading(stock_id, days)
-        
+
         if df is None or len(df) < 5:
             df = self.finmind.get_institutional_trading(stock_id, days)
-        
+
         return df
 
 
