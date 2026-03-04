@@ -27,6 +27,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_STOCKS = ['2330', '2317', '2454', '2308', '2412']
 DAYS = 180  # 快取 180 個交易日
 
+# GitHub Actions 環境下優先使用 yfinance（TWSE 可能封鎖 GH Actions IP）
+IN_GITHUB_ACTIONS = os.environ.get('GITHUB_ACTIONS') == 'true'
+
 
 def fetch_and_save(stock_ids, days=DAYS):
     from data_fetcher import UnifiedDataFetcher, LocalCSVDataFetcher
@@ -35,36 +38,36 @@ def fetch_and_save(stock_ids, days=DAYS):
     cache   = LocalCSVDataFetcher()
     results = {'ok': [], 'fail': []}
 
+    # 在 GitHub Actions 中，yfinance 最穩定；本機優先用 TWSE（官方資料）
+    if IN_GITHUB_ACTIONS:
+        source_order = [
+            ('yfinance', lambda sid: fetcher.yfinance.get_stock_data(sid, days, market='TW')),
+            ('TWSE',     lambda sid: fetcher.twse.get_stock_data(sid, days)),
+            ('FinMind',  lambda sid: fetcher.finmind.get_stock_data(sid, days)),
+        ]
+        print("  ℹ️  GitHub Actions 環境：優先使用 yfinance")
+    else:
+        source_order = [
+            ('TWSE',     lambda sid: fetcher.twse.get_stock_data(sid, days)),
+            ('FinMind',  lambda sid: fetcher.finmind.get_stock_data(sid, days)),
+            ('yfinance', lambda sid: fetcher.yfinance.get_stock_data(sid, days, market='TW')),
+        ]
+
     for sid in stock_ids:
         print(f"\n[{sid}] 抓取資料中...", flush=True)
         try:
-            # Force bypass cache to get fresh data
             df = None
-            # Try TWSE
-            try:
-                df = fetcher.twse.get_stock_data(sid, days)
-                if df is not None and len(df) >= 20:
-                    print(f"  ✅ TWSE: {len(df)} rows")
-            except Exception as e:
-                print(f"  ⚠️  TWSE 失敗: {e}")
-
-            # Fallback: FinMind
-            if df is None or len(df) < 20:
+            for src_name, src_fn in source_order:
                 try:
-                    df = fetcher.finmind.get_stock_data(sid, days)
-                    if df is not None and len(df) >= 20:
-                        print(f"  ✅ FinMind: {len(df)} rows")
+                    result = src_fn(sid)
+                    if result is not None and len(result) >= 20:
+                        df = result
+                        print(f"  ✅ {src_name}: {len(df)} rows")
+                        break
+                    else:
+                        print(f"  ⚠️  {src_name}: 無資料")
                 except Exception as e:
-                    print(f"  ⚠️  FinMind 失敗: {e}")
-
-            # Fallback: yfinance
-            if df is None or len(df) < 20:
-                try:
-                    df = fetcher.yfinance.get_stock_data(sid, days, market='TW')
-                    if df is not None and len(df) >= 20:
-                        print(f"  ✅ yfinance: {len(df)} rows")
-                except Exception as e:
-                    print(f"  ⚠️  yfinance 失敗: {e}")
+                    print(f"  ⚠️  {src_name} 失敗: {type(e).__name__}: {e}")
 
             if df is not None and len(df) >= 20:
                 cache.save(sid, df)
@@ -81,7 +84,7 @@ def fetch_and_save(stock_ids, days=DAYS):
             print(f"  ❌ 例外錯誤: {e}")
             results['fail'].append(sid)
 
-        time.sleep(1)  # 避免 API 過快
+        time.sleep(0.5 if IN_GITHUB_ACTIONS else 1)
 
     print("\n" + "=" * 50)
     print(f"完成：成功 {len(results['ok'])} 支，失敗 {len(results['fail'])} 支")
