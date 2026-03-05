@@ -22,7 +22,7 @@ on:
       days:
         description: '抓取天數'
         required: false
-        default: '180'
+        default: '365'
 
 jobs:
   update-data:
@@ -57,14 +57,14 @@ jobs:
         run: |
           STOCKS="${{ github.event.inputs.stocks }}"
           DAYS="${{ github.event.inputs.days }}"
-          DAYS="${DAYS:-180}"
+          DAYS="${DAYS:-365}"
 
           if [ -n "$STOCKS" ]; then
             echo "📥 Fetching custom stocks: $STOCKS"
             python fetch_and_cache.py --days "$DAYS" $STOCKS
           else
-            echo "📥 Fetching default stock list"
-            python fetch_and_cache.py --days "$DAYS" 2330 2317 2454 2308 2412 3008 0050 0056
+            echo "📥 Fetching full watchlist (48 stocks)"
+            python fetch_and_cache.py --days "$DAYS"
           fi
 
       - name: Commit and push updated CSV files
