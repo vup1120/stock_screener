@@ -2,78 +2,57 @@
 """
 台股篩選系統 - TradingView 風格 Web Dashboard
 ==============================================
-互動式網頁介面，提供 K 線圖 + 技術指標分析。
-
 執行方式:
     cd tw_stock_screener
     streamlit run app.py
 
 首次使用：
-    python fetch_and_cache.py --all --days 365
+    python fetch_and_cache.py --days 365
 """
 
-import os
-import sys
-import time
-import subprocess
-import logging
+import os, sys, time, subprocess, logging
 from pathlib import Path
 
 import streamlit as st
 import pandas as pd
 
-# ── 路徑設定 ─────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 logging.disable(logging.CRITICAL)
 
-# ── 股票觀察清單（分組 + 名稱）────────────────────────────────────────
+# ── 觀察清單（分組）────────────────────────────────────────────────────
 
 WATCHLIST_GROUPS = {
     "AI與半導體核心權值股": [
-        ('2330', '台積電'), ('2317', '鴻海'), ('2454', '聯發科'),
-        ('2382', '廣達'), ('3231', '緯創'), ('2376', '技嘉'),
-        ('2377', '微星'), ('3711', '日月光投控'), ('3661', '世芯-KY'), ('3443', '創意'),
+        ('2330','台積電'),('2317','鴻海'),('2454','聯發科'),('2382','廣達'),
+        ('3231','緯創'),('2376','技嘉'),('2377','微星'),('3711','日月光投控'),
+        ('3661','世芯-KY'),('3443','創意'),
     ],
     "網通訊號與高速傳輸": [
-        ('2345', '智邦'), ('3596', '智易'), ('3034', '聯詠'),
-        ('4966', '譜瑞-KY'), ('5269', '祥碩'), ('2379', '瑞昱'),
-        ('3533', '嘉澤'), ('3105', '穩懋'), ('8086', '宏捷科'), ('2455', '全新'),
+        ('2345','智邦'),('3596','智易'),('3034','聯詠'),('4966','譜瑞-KY'),
+        ('5269','祥碩'),('2379','瑞昱'),('3533','嘉澤'),('3105','穩懋'),
+        ('8086','宏捷科'),('2455','全新'),
     ],
     "先進封裝材料與散熱": [
-        ('2383', '台光電'), ('6274', '台燿'), ('6213', '聯茂'),
-        ('2368', '金像電'), ('3653', '健策'), ('2308', '台達電'),
-        ('5274', '信驊'), ('6187', '萬潤'), ('3680', '家登'), ('6223', '旺矽'),
+        ('2383','台光電'),('6274','台燿'),('6213','聯茂'),('2368','金像電'),
+        ('3653','健策'),('2308','台達電'),('5274','信驊'),('6187','萬潤'),
+        ('3680','家登'),('6223','旺矽'),
     ],
     "重電綠能與航運": [
-        ('1519', '華城'), ('1513', '中興電'), ('1504', '士電'),
-        ('1514', '亞力'), ('6806', '森崴能源'), ('2603', '長榮'), ('2609', '陽明'),
+        ('1519','華城'),('1513','中興電'),('1504','士電'),('1514','亞力'),
+        ('6806','森崴能源'),('2603','長榮'),('2609','陽明'),
     ],
-    "矽光子 / CPO": [
-        ('3081', '聯亞'), ('3363', '上詮'), ('3163', '波若威'),
-    ],
-    "液冷散熱技術": [
-        ('3324', '雙鴻'), ('3017', '奇鋐'), ('8996', '高力'),
-    ],
-    "先進封裝設備": [
-        ('3131', '弘塑'), ('3583', '辛耘'), ('8027', '鈦昇'),
-    ],
-    "其他": [
-        ('2337', '旺宏'), ('00631L', '元大台灣50正2'),
-    ],
+    "矽光子 / CPO": [('3081','聯亞'),('3363','上詮'),('3163','波若威')],
+    "液冷散熱": [('3324','雙鴻'),('3017','奇鋐'),('8996','高力')],
+    "先進封裝設備": [('3131','弘塑'),('3583','辛耘'),('8027','鈦昇')],
+    "其他": [('2337','旺宏'),('00631L','元大台灣50正2')],
 }
 
-# Build flat lookup
-STOCK_NAMES = {}
-ALL_STOCK_IDS = []
-for grp_stocks in WATCHLIST_GROUPS.values():
-    for sid, name in grp_stocks:
-        if sid not in STOCK_NAMES:
-            STOCK_NAMES[sid] = name
-            ALL_STOCK_IDS.append(sid)
-
+STOCK_NAMES = {sid: name for g in WATCHLIST_GROUPS.values() for sid, name in g}
+ALL_STOCK_IDS = list(STOCK_NAMES.keys())
 
 # ── 頁面設定 ──────────────────────────────────────────────────────────
+
 st.set_page_config(
     page_title="台股 TradingView",
     page_icon="📈",
@@ -83,268 +62,267 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-/* Reduce padding for TradingView-like look */
-.block-container { padding-top: 1rem; padding-bottom: 0; }
-section[data-testid="stSidebar"] > div { padding-top: 1rem; }
-/* Stock button in sidebar */
-.stock-btn { font-size: 0.85em; }
-/* Metric cards */
-div[data-testid="stMetric"] { background: #f8f9fa; border-radius: 8px; padding: 8px 12px; }
+.block-container { padding-top: 0.8rem; padding-bottom: 0; }
+section[data-testid="stSidebar"] > div { padding-top: 0.8rem; }
+div[data-testid="stMetric"] {
+    background: #f0f2f6; border-radius: 8px; padding: 6px 12px;
+}
 </style>
 """, unsafe_allow_html=True)
 
 
 # ── 工具函數 ──────────────────────────────────────────────────────────
 
-def get_cached_stocks() -> set:
-    data_dir = ROOT / 'data'
-    if not data_dir.exists():
-        return set()
-    return {f.stem.replace('_cache', '') for f in data_dir.glob('*_cache.csv')}
+def cached_stocks() -> set:
+    d = ROOT / 'data'
+    return {f.stem.replace('_cache','') for f in d.glob('*_cache.csv')} if d.exists() else set()
 
+def cache_age_h(sid: str) -> float:
+    p = ROOT / 'data' / f'{sid}_cache.csv'
+    return (time.time() - p.stat().st_mtime) / 3600 if p.exists() else -1
 
-def cache_age(stock_id: str) -> float:
-    """Return cache age in hours, or -1 if no cache."""
-    path = ROOT / 'data' / f'{stock_id}_cache.csv'
-    if not path.exists():
-        return -1
-    return (time.time() - path.stat().st_mtime) / 3600
+def age_label(h: float) -> str:
+    if h < 0:   return "❌ 無資料"
+    if h < 1:   return "🟢 剛更新"
+    if h < 24:  return f"🟢 {h:.0f}h 前"
+    if h < 72:  return f"🟡 {h/24:.1f}天前"
+    return f"🔴 {h/24:.0f}天前"
 
-
-def cache_age_label(hours: float) -> str:
-    if hours < 0:
-        return "❌ 無資料"
-    if hours < 1:
-        return "🟢 剛更新"
-    if hours < 24:
-        return f"🟢 {hours:.0f}h 前"
-    if hours < 72:
-        return f"🟡 {hours/24:.0f}天前"
-    return f"🔴 {hours/24:.0f}天前"
-
-
+# Step 1 — cached: load CSV + compute all indicators (slow once, then instant)
 @st.cache_data(ttl=600, show_spinner=False)
-def load_stock(stock_id: str, days: int):
-    """從本地快取載入 OHLCV 資料。"""
-    path = ROOT / 'data' / f'{stock_id}_cache.csv'
-    if not path.exists():
-        return None
-    df = pd.read_csv(path)
-    df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values('date').reset_index(drop=True)
-    return df.tail(days).reset_index(drop=True)
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def compute_analysis(stock_id: str, days: int, chart_type: str, theme: str):
-    """計算指標並建立圖表。"""
+def compute_indicators(stock_id: str, days: int):
     from indicators.combo_indicator import calculate_combo
     from config import UT_BOT_CONFIG, SMC_CONFIG, EMA_CONFIG, SCREENING_CRITERIA
     from indicators.ut_bot import get_ut_bot_signal, calculate_ut_bot, calculate_ema_ribbon
     from indicators.smc import calculate_smc
-    from visualization import plot_stock_with_indicators
 
-    df = load_stock(stock_id, days)
-    if df is None or len(df) < 20:
+    p = ROOT / 'data' / f'{stock_id}_cache.csv'
+    if not p.exists():
+        return None
+    df = pd.read_csv(p)
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date').tail(days).reset_index(drop=True)
+    if len(df) < 20:
         return None
 
-    # 指標
-    combo = calculate_combo(
-        df, ut_config=UT_BOT_CONFIG,
-        ema_periods=EMA_CONFIG.get('periods', [5, 20, 60, 120, 240]),
-        mm_length=1, smc_config=SMC_CONFIG,
-    )
+    combo = calculate_combo(df, ut_config=UT_BOT_CONFIG,
+        ema_periods=EMA_CONFIG.get('periods',[5,20,60,120,240]),
+        mm_length=1, smc_config=SMC_CONFIG)
 
-    # 分析
-    r = {'stock_id': stock_id, 'price': float(df['close'].iloc[-1])}
-    r['change'] = float(
-        (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2] * 100
-    ) if len(df) >= 2 else 0.0
+    # Analysis summary
+    r = {'price': float(df['close'].iloc[-1])}
+    r['change'] = float((df['close'].iloc[-1]-df['close'].iloc[-2])/df['close'].iloc[-2]*100) if len(df)>=2 else 0.0
 
     try:
-        ut_df = calculate_ut_bot(df, **{k: UT_BOT_CONFIG[k] for k in ['key_value', 'atr_period', 'use_heikin_ashi']})
-        ut_sum = get_ut_bot_signal(ut_df)
-        r['ut_signal'] = ut_sum['signal']
-        r['ut_trend']  = ut_sum['trend']
-        r['ut_stop']   = ut_sum.get('atr_stop')
-        r['ut_str']    = ut_sum.get('strength', 0)
+        ut_df = calculate_ut_bot(df, key_value=UT_BOT_CONFIG['key_value'],
+            atr_period=UT_BOT_CONFIG['atr_period'], use_heikin_ashi=UT_BOT_CONFIG['use_heikin_ashi'])
+        ut = get_ut_bot_signal(ut_df)
+        r['ut_signal']=ut['signal']; r['ut_trend']=ut['trend']
+        r['ut_stop']=ut.get('atr_stop'); r['ut_str']=ut.get('strength',0)
     except Exception:
-        r['ut_signal'] = 'hold'; r['ut_trend'] = 'N/A'; r['ut_stop'] = None; r['ut_str'] = 0
+        r['ut_signal']='hold'; r['ut_trend']='N/A'; r['ut_stop']=None; r['ut_str']=0
 
     try:
-        _, smc_sum = calculate_smc(df, **{k: SMC_CONFIG[k] for k in
-            ['swing_length', 'internal_length', 'equal_hl_threshold', 'order_block_filter', 'fvg_threshold']})
-        r['smc_signal'] = smc_sum.get('signal')
-        r['smc_trend']  = smc_sum.get('swing_trend', 'N/A')
-        r['smc_str']    = smc_sum.get('signal_strength', 0)
-        r['smc_ob']     = smc_sum.get('order_blocks_count', 0)
-        r['smc_fvg']    = smc_sum.get('fvg_count', 0)
+        _, sm = calculate_smc(df, swing_length=SMC_CONFIG['swing_length'],
+            internal_length=SMC_CONFIG['internal_length'],
+            equal_hl_threshold=SMC_CONFIG['equal_hl_threshold'],
+            order_block_filter=SMC_CONFIG['order_block_filter'],
+            fvg_threshold=SMC_CONFIG['fvg_threshold'])
+        r['smc_signal']=sm.get('signal'); r['smc_trend']=sm.get('swing_trend','N/A')
+        r['smc_str']=sm.get('signal_strength',0)
+        r['smc_ob']=sm.get('order_blocks_count',0); r['smc_fvg']=sm.get('fvg_count',0)
     except Exception:
-        r['smc_signal'] = None; r['smc_trend'] = 'N/A'; r['smc_str'] = 0; r['smc_ob'] = 0; r['smc_fvg'] = 0
+        r['smc_signal']=None; r['smc_trend']='N/A'; r['smc_str']=0; r['smc_ob']=0; r['smc_fvg']=0
 
     try:
         ema_df = calculate_ema_ribbon(df, periods=EMA_CONFIG['periods'])
         r['ema_bull'] = bool(ema_df['ema_bullish'].iloc[-1]) if 'ema_bullish' in ema_df.columns else False
         r['ema_bear'] = bool(ema_df['ema_bearish'].iloc[-1]) if 'ema_bearish' in ema_df.columns else False
     except Exception:
-        r['ema_bull'] = False; r['ema_bear'] = False
+        r['ema_bull']=False; r['ema_bear']=False
 
-    if len(df) >= 20:
-        avg_vol = df['volume'].tail(20).mean()
-        r['vol_ratio'] = float(df['volume'].iloc[-1] / avg_vol) if avg_vol > 0 else 1.0
+    if len(df)>=20:
+        avg = df['volume'].tail(20).mean()
+        r['vol_ratio'] = float(df['volume'].iloc[-1]/avg) if avg>0 else 1.0
         r['vol_spike'] = r['vol_ratio'] > SCREENING_CRITERIA['volume_ratio']
     else:
-        r['vol_ratio'] = 1.0; r['vol_spike'] = False
+        r['vol_ratio']=1.0; r['vol_spike']=False
 
-    # 綜合評分
-    score = 0
-    if r['ut_signal'] == 'buy':         score += 30
-    if 'bull' in str(r['smc_signal']): score += 30
-    if r['ema_bull']:                   score += 20
-    if r['vol_spike']:                  score += 10
-    r['score'] = score
+    s = 0
+    if r['ut_signal']=='buy':         s+=30
+    if 'bull' in str(r['smc_signal']): s+=30
+    if r['ema_bull']:                  s+=20
+    if r['vol_spike']:                 s+=10
+    r['score'] = s
 
-    # 圖表
+    return {'df': df, 'combo': combo, 'r': r}
+
+
+# Step 2 — NOT cached: build Plotly figure from computed data + current toggle selections
+def build_chart(df, stock_id, combo, chart_type, theme, show_flags):
+    from visualization import plot_stock_with_indicators
+
+    c = combo
+
+    # Filter ut_data based on toggles
+    ut = None
+    if show_flags['ut_stop'] or show_flags['ut_signals']:
+        ut = {
+            'atr_trailing_stop': c['ut_data'].get('atr_trailing_stop') if show_flags['ut_stop'] else None,
+            'ut_buy':  c['ut_data'].get('ut_buy')  if show_flags['ut_signals'] else None,
+            'ut_sell': c['ut_data'].get('ut_sell') if show_flags['ut_signals'] else None,
+        }
+
+    # Filter smc_data based on toggles
+    smc = None
+    if show_flags['smc_struct'] or show_flags['ob'] or show_flags['fvg']:
+        smc = {
+            'bos_bull':    c['smc_data'].get('bos_bull')    if show_flags['smc_struct'] else None,
+            'bos_bear':    c['smc_data'].get('bos_bear')    if show_flags['smc_struct'] else None,
+            'choch_bull':  c['smc_data'].get('choch_bull')  if show_flags['smc_struct'] else None,
+            'choch_bear':  c['smc_data'].get('choch_bear')  if show_flags['smc_struct'] else None,
+            'order_blocks':c['smc_data'].get('order_blocks')if show_flags['ob']         else None,
+            'fvg':         c['smc_data'].get('fvg')         if show_flags['fvg']        else None,
+        }
+
+    ema = c['ema_ribbon'] if show_flags['ema'] else None
+    mm  = c['maxmin']     if show_flags['maxmin'] else None
+
     fig = plot_stock_with_indicators(
         df, stock_id,
-        ut_data=combo['ut_data'], smc_data=combo['smc_data'],
-        ema_ribbon=combo['ema_ribbon'], maxmin=combo['maxmin'],
+        ut_data=ut, smc_data=smc, ema_ribbon=ema, maxmin=mm,
         chart_type=chart_type, save_path=None, show=False, theme=theme,
     )
-    # Make chart taller
-    fig.update_layout(height=700)
+    fig.update_layout(height=680, margin=dict(l=0, r=0, t=30, b=0))
+    return fig
 
-    return {'df': df, 'r': r, 'fig': fig}
-
-
-def run_fetch(stock_ids: list[str]):
-    """執行 fetch_and_cache.py"""
-    script = str(ROOT / 'fetch_and_cache.py')
-    cmd = [sys.executable, script, '--days', '365'] + stock_ids
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, cwd=str(ROOT))
+def run_fetch(ids):
+    proc = subprocess.run(
+        [sys.executable, str(ROOT/'fetch_and_cache.py'), '--days','365'] + ids,
+        capture_output=True, text=True, timeout=600, cwd=str(ROOT))
     return proc.stdout + proc.stderr
 
 
-# ── Sidebar: 股票選擇器 ──────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────
 
-cached_stocks = get_cached_stocks()
+have_cache = cached_stocks()
 
 with st.sidebar:
     st.markdown("### 📈 台股監控")
 
-    # 圖表設定（compact）
-    col_a, col_b = st.columns(2)
-    with col_a:
-        chart_type = st.selectbox("圖表", ['candlestick', 'heikin_ashi'],
-                                   format_func=lambda x: 'K線' if x == 'candlestick' else 'HA')
-    with col_b:
-        days = st.selectbox("天數", [60, 90, 120, 180, 245], index=2)
-
-    theme = st.radio("主題", ['light', 'dark'], horizontal=True, label_visibility="collapsed")
+    # ── 圖表基本設定 ──────────────────────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
+        chart_type = st.selectbox("圖表",['candlestick','heikin_ashi'],
+            format_func=lambda x: 'K線' if x=='candlestick' else 'HA')
+    with c2:
+        days = st.selectbox("天數",[60,90,120,180,245],index=2)
+    theme = st.radio("主題",['light','dark'],horizontal=True,label_visibility="collapsed")
 
     st.divider()
 
-    # 股票分組列表
-    if 'selected_stock' not in st.session_state:
-        st.session_state.selected_stock = '2330'
+    # ── 指標顯示控制 ──────────────────────────────────────
+    st.markdown("**指標選擇**")
+    fl = {}  # show_flags dict
 
-    for group_name, stocks in WATCHLIST_GROUPS.items():
-        with st.expander(group_name, expanded=(group_name == "AI與半導體核心權值股")):
+    col_l, col_r = st.columns(2)
+    with col_l:
+        fl['ut_stop']    = st.checkbox("UT Bot 止損線",  value=True)
+        fl['smc_struct'] = st.checkbox("SMC BOS/CHoCH", value=True)
+        fl['fvg']        = st.checkbox("FVG 缺口",       value=False)
+    with col_r:
+        fl['ut_signals'] = st.checkbox("UT Bot 信號",   value=True)
+        fl['ob']         = st.checkbox("Order Blocks",  value=True)
+        fl['ema']        = st.checkbox("EMA Ribbon",    value=True)
+
+    fl['maxmin'] = st.checkbox("MaxMin 區間", value=False)
+
+    st.divider()
+
+    # ── 股票清單（分組）──────────────────────────────────
+    if 'selected' not in st.session_state:
+        st.session_state.selected = '2330'
+
+    for grp, stocks in WATCHLIST_GROUPS.items():
+        with st.expander(grp, expanded=(grp=="AI與半導體核心權值股")):
             for sid, name in stocks:
-                has_data = sid in cached_stocks
-                icon = "🟢" if has_data else "⚫"
-                label = f"{icon} {sid} {name}"
-                if st.button(label, key=f"btn_{sid}", use_container_width=True):
-                    st.session_state.selected_stock = sid
+                icon = "🟢" if sid in have_cache else "⚫"
+                if st.button(f"{icon} {sid} {name}", key=f"b_{sid}", use_container_width=True):
+                    st.session_state.selected = sid
                     st.rerun()
 
-    st.divider()
-
-    # 自訂代碼
-    custom = st.text_input("自訂股票代碼", placeholder="例: 2303")
+    custom = st.text_input("自訂代碼", placeholder="例: 2303")
     if custom.strip():
-        st.session_state.selected_stock = custom.strip()
+        st.session_state.selected = custom.strip()
 
     st.divider()
 
-    # 批次更新
-    if st.button("🔄 更新全部資料", use_container_width=True, type="primary"):
-        with st.spinner("正在抓取所有股票資料（首次可能需要幾分鐘）..."):
-            output = run_fetch(ALL_STOCK_IDS)
-        load_stock.clear()
-        compute_analysis.clear()
-        st.success("資料已更新！")
-        with st.expander("抓取詳情"):
-            st.code(output)
+    if st.button("🔄 更新全部", use_container_width=True, type="primary"):
+        with st.spinner("抓取全部 48 支股票資料中…"):
+            out = run_fetch(ALL_STOCK_IDS)
+        compute_indicators.clear()
+        st.success("完成！")
+        with st.expander("詳情"):
+            st.code(out)
         st.rerun()
 
-    # 單一股票更新
-    if st.button(f"🔄 只更新 {st.session_state.selected_stock}", use_container_width=True):
-        with st.spinner(f"正在抓取 {st.session_state.selected_stock}..."):
-            output = run_fetch([st.session_state.selected_stock])
-        load_stock.clear()
-        compute_analysis.clear()
-        st.success("完成")
+    sid_now = st.session_state.selected
+    if st.button(f"🔄 只更新 {sid_now}", use_container_width=True):
+        with st.spinner(f"抓取 {sid_now}…"):
+            out = run_fetch([sid_now])
+        compute_indicators.clear()
         st.rerun()
 
 
 # ── 主畫面 ────────────────────────────────────────────────────────────
 
-stock_id = st.session_state.selected_stock
-stock_name = STOCK_NAMES.get(stock_id, '')
-age_h = cache_age(stock_id)
+sid = st.session_state.selected
+name = STOCK_NAMES.get(sid, '')
+age  = cache_age_h(sid)
 
-# Header
-hdr1, hdr2 = st.columns([3, 1])
-with hdr1:
-    st.markdown(f"## {stock_id}　{stock_name}")
-with hdr2:
-    st.caption(f"資料更新: {cache_age_label(age_h)}")
+h1, h2 = st.columns([4, 1])
+with h1:
+    st.markdown(f"## {sid}　{name}")
+with h2:
+    st.caption(age_label(age))
 
-if age_h < 0:
-    st.warning(f"沒有 {stock_id} 的快取資料。請點擊左側「🔄 更新全部資料」或在本機執行：")
-    st.code(f"python fetch_and_cache.py {stock_id} --days 365")
+if age < 0:
+    st.warning(f"沒有 {sid} 的快取資料。請執行：")
+    st.code(f"python fetch_and_cache.py {sid} --days 365")
     st.stop()
 
-# 計算
-with st.spinner("計算指標..."):
-    data = compute_analysis(stock_id, days, chart_type, theme)
+with st.spinner("計算指標中…"):
+    data = compute_indicators(sid, days)
 
 if data is None:
-    st.error(f"資料不足以計算指標（{stock_id} 快取可能損壞）。")
+    st.error("資料不足，請重新抓取。")
     st.stop()
 
-df  = data['df']
-r   = data['r']
-fig = data['fig']
+df    = data['df']
+combo = data['combo']
+r     = data['r']
 
 # ── 指標卡片 ──────────────────────────────────────────────────────────
 
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-
-c1.metric("收盤價", f"{r['price']:,.1f}", f"{r['change']:+.2f}%")
-
-vol_label = f"{r['vol_ratio']:.1f}x" + (" ⚡" if r['vol_spike'] else "")
-c2.metric("量能", vol_label)
-
-ut_icon = {'buy': '🟢', 'sell': '🔴'}.get(r['ut_signal'], '🟡')
-c3.metric("UT Bot", f"{ut_icon} {r['ut_signal'].upper()}", r['ut_trend'])
-
+m1,m2,m3,m4,m5,m6 = st.columns(6)
+m1.metric("收盤價",  f"{r['price']:,.1f}", f"{r['change']:+.2f}%")
+m2.metric("量能",    f"{r['vol_ratio']:.1f}x" + (" ⚡" if r['vol_spike'] else ""))
+ut_ic = {'buy':'🟢','sell':'🔴'}.get(r['ut_signal'],'🟡')
+m3.metric("UT Bot",  f"{ut_ic} {r['ut_signal'].upper()}", r['ut_trend'])
 smc_s = str(r['smc_signal'] or 'N/A')
-smc_icon = '🟢' if 'bull' in smc_s.lower() else ('🔴' if 'bear' in smc_s.lower() else '⚪')
-c4.metric("SMC", f"{smc_icon} {smc_s}", f"{r['smc_str']}/100")
+smc_ic= '🟢' if 'bull' in smc_s.lower() else ('🔴' if 'bear' in smc_s.lower() else '⚪')
+m4.metric("SMC",     f"{smc_ic} {smc_s}", f"{r['smc_str']}/100")
+ema_l = '🟢 多頭' if r['ema_bull'] else ('🔴 空頭' if r['ema_bear'] else '🟡 整理')
+m5.metric("EMA",     ema_l)
+vrd   = '🟢 強勢' if r['score']>=70 else ('🟡 觀望' if r['score']>=40 else '🔴 謹慎')
+m6.metric("綜合",    vrd, f"{r['score']}/100")
 
-ema_label = '🟢 多頭' if r['ema_bull'] else ('🔴 空頭' if r['ema_bear'] else '🟡 整理')
-c5.metric("EMA", ema_label)
+# ── 圖表（指標選擇即時生效）──────────────────────────────────────────
 
-verdict = '🟢 強勢' if r['score'] >= 70 else ('🟡 觀望' if r['score'] >= 40 else '🔴 謹慎')
-c6.metric("綜合", verdict, f"{r['score']}/100")
+fig = build_chart(df, sid, combo, chart_type, theme, fl)
+st.plotly_chart(fig, use_container_width=True, key="chart")
 
-# ── K線圖（全寬）─────────────────────────────────────────────────────
-
-st.plotly_chart(fig, use_container_width=True, key="main_chart")
-
-# ── 下方分析面板 ──────────────────────────────────────────────────────
+# ── 下方 Tabs ─────────────────────────────────────────────────────────
 
 tab1, tab2, tab3 = st.tabs(["📊 詳細指標", "📋 K線資料", "ℹ️ 說明"])
 
@@ -356,55 +334,53 @@ with tab1:
         st.write(f"信號: **{r['ut_signal'].upper()}**")
         if r['ut_stop']:
             st.write(f"ATR Stop: **{r['ut_stop']:,.1f}**")
-        st.progress(min(r['ut_str'], 100), text=f"強度 {r['ut_str']}/100")
-
+        st.progress(min(r['ut_str'],100), text=f"強度 {r['ut_str']}/100")
     with p2:
-        st.markdown("#### 📐 SMC 智慧資金")
+        st.markdown("#### 📐 SMC")
         st.write(f"趨勢: **{r['smc_trend']}**")
         st.write(f"信號: **{r['smc_signal'] or 'N/A'}**")
-        st.write(f"Order Blocks: **{r['smc_ob']}** / FVG: **{r['smc_fvg']}**")
-        st.progress(min(r['smc_str'], 100), text=f"強度 {r['smc_str']}/100")
-
+        st.write(f"OB: **{r['smc_ob']}**　FVG: **{r['smc_fvg']}**")
+        st.progress(min(r['smc_str'],100), text=f"強度 {r['smc_str']}/100")
     with p3:
-        st.markdown("#### 📊 量能 & 趨勢")
+        st.markdown("#### 📊 量能 & EMA")
         st.write(f"成交量倍數: **{r['vol_ratio']:.2f}x**")
-        st.write(f"{'⚡ 放量突破！' if r['vol_spike'] else '正常量能'}")
-        st.write(f"EMA: **{'✅ 多頭排列' if r['ema_bull'] else ('🔴 空頭排列' if r['ema_bear'] else '⚠️ 混合整理')}**")
+        if r['vol_spike']:
+            st.write("⚡ **放量突破！**")
+        ema_desc = '✅ 多頭排列' if r['ema_bull'] else ('🔴 空頭排列' if r['ema_bear'] else '⚠️ 整理中')
+        st.write(f"EMA: **{ema_desc}**")
         st.divider()
-        st.write(f"**綜合評分: {r['score']}/100**")
+        st.write(f"**綜合評分: {r['score']}/100**　{vrd}")
 
 with tab2:
-    show_df = df.tail(30).copy()
-    show_df['date'] = pd.to_datetime(show_df['date']).dt.strftime('%Y-%m-%d')
-    show_df['漲跌%'] = show_df['close'].pct_change().mul(100).round(2)
-    show_df = show_df.rename(columns={
-        'date': '日期', 'open': '開盤', 'high': '最高',
-        'low': '最低', 'close': '收盤', 'volume': '成交量'
-    })
-    st.dataframe(
-        show_df[['日期', '開盤', '最高', '最低', '收盤', '成交量', '漲跌%']].iloc[::-1],
-        use_container_width=True, hide_index=True,
-    )
+    disp = df.tail(30).copy()
+    disp['date'] = pd.to_datetime(disp['date']).dt.strftime('%Y-%m-%d')
+    disp['漲跌%'] = disp['close'].pct_change().mul(100).round(2)
+    disp = disp.rename(columns={'date':'日期','open':'開盤','high':'最高',
+                                 'low':'最低','close':'收盤','volume':'成交量'})
+    st.dataframe(disp[['日期','開盤','最高','最低','收盤','成交量','漲跌%']].iloc[::-1],
+                 use_container_width=True, hide_index=True)
 
 with tab3:
     st.markdown(f"""
-### 使用說明
+### 指標說明
 
-**首次使用** — 在本機執行以下指令下載全部股票 1 年歷史資料：
+| 指標 | 說明 |
+|------|------|
+| **UT Bot 止損線** | ATR 動態止損線（紅/綠），穿越時反轉 |
+| **UT Bot 信號** | 買進(▲綠) / 賣出(▼紅) 箭頭 |
+| **SMC BOS/CHoCH** | Break of Structure / Change of Character 結構突破標記 |
+| **Order Blocks** | 機構買賣區塊（多方=綠框/空方=紅框） |
+| **FVG 缺口** | Fair Value Gap 未填補缺口（公允價值缺口） |
+| **EMA Ribbon** | 5/20/60/120/240 均線排列 |
+| **MaxMin 區間** | 近期高低點通道 |
+
+### 資料更新
 ```bash
-cd tw_stock_screener
-python fetch_and_cache.py --all --days 365
+# 更新全部 48 支股票（約 2-3 分鐘）
+python fetch_and_cache.py
+
+# 只更新單一股票
+python fetch_and_cache.py 2330
 ```
-
-**日常更新** — 兩種方式：
-1. 點擊左側「🔄 更新全部資料」按鈕
-2. GitHub Actions 每日 14:30 TST 自動更新（需先合併至 main）
-
-**資料來源**: TWSE → FinMind → yfinance（自動切換）
-
-**指標說明**:
-- **UT Bot**: 基於 ATR 的趨勢追蹤 + Heikin Ashi
-- **SMC**: 智慧資金概念（BOS/CHoCH/Order Block/FVG）
-- **EMA Ribbon**: 5/20/60/120/240 均線排列
-- **綜合評分**: UT Bot(30) + SMC(30) + EMA(20) + 量能(10) = 最高90分
+GitHub Actions 每日 14:30 TST 自動更新後推送至倉庫。
     """)
