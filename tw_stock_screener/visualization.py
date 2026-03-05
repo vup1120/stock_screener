@@ -647,11 +647,21 @@ class PlotlyChart:
             margin=dict(l=50, r=50, t=50, b=50),
         )
         
+        # Compute all calendar dates in range that have no trading data.
+        # This covers weekends AND all public holidays (CNY, etc.) dynamically,
+        # so the x-axis shows no gaps between trading days.
+        trading_dates = set(self.df['date'].dt.normalize())
+        all_calendar = pd.date_range(self.df['date'].min(), self.df['date'].max(), freq='D')
+        non_trading = [d.strftime('%Y-%m-%d') for d in all_calendar if d not in trading_dates]
+
         self.fig.update_xaxes(
             gridcolor=self.COLORS['grid'],
             showgrid=True,
             zeroline=False,
-            rangebreaks=[dict(bounds=["sat", "mon"])],
+            rangebreaks=[
+                dict(bounds=["sat", "mon"]),   # skip weekends
+                dict(values=non_trading),       # skip holidays & any other market closures
+            ],
         )
         
         self.fig.update_yaxes(
