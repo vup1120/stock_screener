@@ -166,8 +166,10 @@ class PlotlyChart:
         if 'date' not in self.df.columns:
             self.df['date'] = self.df.index
         
-        # 確保日期格式正確
-        self.df['date'] = pd.to_datetime(self.df['date'])
+        # Convert to sortable string format.
+        # Using strings + type='category' axis eliminates ALL x-axis gaps
+        # (weekends, holidays, CNY) without needing rangebreaks.
+        self.df['date'] = pd.to_datetime(self.df['date']).dt.strftime('%Y-%m-%d')
     
     def create_candlestick_chart(
         self,
@@ -557,16 +559,16 @@ class PlotlyChart:
         
         for ob in order_blocks[-10:]:  # 只顯示最近 10 個
             color = self.COLORS['ob_bull'] if ob.get('bias') == 'bullish' else self.COLORS['ob_bear']
-            
+
             start_idx = ob.get('bar_index', 0)
             if start_idx < len(self.df):
-                start_date = self.df['date'].iloc[start_idx]
-                end_date = self.df['date'].iloc[-1]
-                
+                # With categorical x-axis, shapes use integer bar positions
+                end_idx = len(self.df) - 1
+
                 self.fig.add_shape(
                     type="rect",
-                    x0=start_date,
-                    x1=end_date,
+                    x0=start_idx,
+                    x1=end_idx,
                     y0=ob['low'],
                     y1=ob['high'],
                     fillcolor=color,
@@ -588,16 +590,16 @@ class PlotlyChart:
         
         for fvg in fvg_list[-10:]:
             color = self.COLORS['fvg_bull'] if fvg.get('bias') == 'bullish' else self.COLORS['fvg_bear']
-            
+
             start_idx = fvg.get('bar_index', 0)
             if start_idx < len(self.df):
-                start_date = self.df['date'].iloc[start_idx]
-                end_date = self.df['date'].iloc[-1]
-                
+                # With categorical x-axis, shapes use integer bar positions
+                end_idx = len(self.df) - 1
+
                 self.fig.add_shape(
                     type="rect",
-                    x0=start_date,
-                    x1=end_date,
+                    x0=start_idx,
+                    x1=end_idx,
                     y0=fvg['bottom'],
                     y1=fvg['top'],
                     fillcolor=color,
@@ -647,11 +649,14 @@ class PlotlyChart:
             margin=dict(l=50, r=50, t=50, b=50),
         )
         
+        # type='category' means Plotly only renders the exact date strings
+        # present in the data — no gaps for weekends, CNY, or any holiday.
         self.fig.update_xaxes(
             gridcolor=self.COLORS['grid'],
             showgrid=True,
             zeroline=False,
-            rangebreaks=[dict(bounds=["sat", "mon"])],
+            type='category',
+            nticks=8,
         )
         
         self.fig.update_yaxes(
