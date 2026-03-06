@@ -181,17 +181,21 @@ class SMCCalculator:
 
             swing_highs_lows[positions[index_to_remove]] = np.nan
 
-        # 確保首尾 pivot 交替
+        # 確保首尾有 pivot，且與第一個/最後一個 pivot 交替
         positions = np.where(~np.isnan(swing_highs_lows))[0]
         if len(positions) > 0:
-            if swing_highs_lows[positions[0]] == 1:
-                swing_highs_lows[0] = -1
-            if swing_highs_lows[positions[0]] == -1:
-                swing_highs_lows[0] = 1
-            if swing_highs_lows[positions[-1]] == -1:
-                swing_highs_lows[-1] = 1
-            if swing_highs_lows[positions[-1]] == 1:
-                swing_highs_lows[-1] = -1
+            # Add opposite pivot at the start if first detected pivot isn't at index 0
+            if positions[0] != 0:
+                if swing_highs_lows[positions[0]] == 1:
+                    swing_highs_lows[0] = -1
+                else:
+                    swing_highs_lows[0] = 1
+            # Add opposite pivot at the end if last detected pivot isn't at last index
+            if positions[-1] != n - 1:
+                if swing_highs_lows[positions[-1]] == 1:
+                    swing_highs_lows[-1] = -1
+                else:
+                    swing_highs_lows[-1] = 1
 
         level = np.where(
             ~np.isnan(swing_highs_lows),
@@ -266,42 +270,49 @@ class SMCCalculator:
 
                 last_positions.append(i)
 
-        # Find broken index for each BOS/CHoCH
-        broken = np.zeros(n, dtype=np.int32)
-        for i in np.where(np.logical_or(bos != 0, choch != 0))[0]:
-            mask = np.zeros(n, dtype=np.bool_)
-            if bos[i] == 1 or choch[i] == 1:
-                mask[i + 2:] = ohlc["close" if close_break else "high"].iloc[i + 2:].values > level[i]
-            elif bos[i] == -1 or choch[i] == -1:
-                mask[i + 2:] = ohlc["close" if close_break else "low"].iloc[i + 2:].values < level[i]
-            if np.any(mask):
-                j = np.argmax(mask)
-                broken[i] = j
-                # Remove overlapping signals
-                for k in np.where(np.logical_or(bos != 0, choch != 0))[0]:
-                    if k < i and broken[k] >= j:
-                        bos[k] = 0
-                        choch[k] = 0
-                        level[k] = 0
+        # Find break point for each BOS/CHoCH and move signal there
+        # This places the signal at the bar where price actually crosses the level
+        pivot_signals = np.where(np.logical_or(bos != 0, choch != 0))[0]
 
-        # Remove unbroken signals
-        for i in np.where(
-            np.logical_and(np.logical_or(bos != 0, choch != 0), broken == 0)
-        )[0]:
-            bos[i] = 0
-            choch[i] = 0
-            level[i] = 0
+        # Collect (pivot_idx, break_idx) pairs
+        confirmed = []
+        for i in pivot_signals:
+            search_start = i + 1
+            if search_start >= n:
+                continue
+            if bos[i] == 1 or choch[i] == 1:
+                vals = ohlc["close" if close_break else "high"].iloc[search_start:].values
+                mask = vals > level[i]
+            else:
+                vals = ohlc["close" if close_break else "low"].iloc[search_start:].values
+                mask = vals < level[i]
+            if np.any(mask):
+                j = search_start + int(np.argmax(mask))
+                confirmed.append((i, j, bos[i], choch[i], level[i]))
+
+        # Clear all signals, then re-place at break points
+        bos[:] = 0
+        choch[:] = 0
+        level[:] = 0
+
+        used_break_points = set()
+        for pivot_idx, break_idx, bos_val, choch_val, lv in confirmed:
+            # Skip if this break point already used by an earlier signal
+            if break_idx in used_break_points:
+                continue
+            used_break_points.add(break_idx)
+            bos[break_idx] = bos_val
+            choch[break_idx] = choch_val
+            level[break_idx] = lv
 
         bos = np.where(bos != 0, bos, np.nan)
         choch = np.where(choch != 0, choch, np.nan)
         level = np.where(level != 0, level, np.nan)
-        broken = np.where(broken != 0, broken, np.nan)
 
         return pd.DataFrame({
             'BOS': bos,
             'CHOCH': choch,
             'Level': level,
-            'BrokenIndex': broken,
         }, index=ohlc.index)
 
     @staticmethod
@@ -690,19 +701,28 @@ class SMCCalculator:
         # Normalize column names to lowercase
         df.columns = [c.lower() for c in df.columns]
 
+        # Auto-scale swing_length to fit available data
+        # Need at least 4 alternating pivots; each pivot needs a centered window of 2*swing_length
+        # Heuristic: swing_length <= len(df) / 10 ensures enough pivots
+        n = len(df)
+        effective_swing = min(self.swing_length, max(5, n // 10))
+        effective_internal = min(self.internal_length, max(3, n // 20))
+        if effective_swing != self.swing_length:
+            logger.info(f"Auto-scaled swing_length {self.swing_length} -> {effective_swing} for {n} bars")
+
         # 計算 ATR
         df['atr'] = self._calculate_atr(df)
         df['volatility'] = df['atr'] if self.order_block_filter == 'atr' else (df['high'] - df['low']).expanding().mean()
 
         # ---- Swing 結構 (使用改良演算法) ----
-        swing_result = self._swing_highs_lows(df, self.swing_length)
+        swing_result = self._swing_highs_lows(df, effective_swing)
         df['swing_high_point'] = (swing_result['HighLow'] == 1).values
         df['swing_low_point'] = (swing_result['HighLow'] == -1).values
         df['swing_high_level'] = np.where(swing_result['HighLow'] == 1, swing_result['Level'], np.nan)
         df['swing_low_level'] = np.where(swing_result['HighLow'] == -1, swing_result['Level'], np.nan)
 
         # ---- Internal 結構 ----
-        internal_result = self._swing_highs_lows(df, self.internal_length)
+        internal_result = self._swing_highs_lows(df, effective_internal)
         df['internal_high_point'] = (internal_result['HighLow'] == 1).values
         df['internal_low_point'] = (internal_result['HighLow'] == -1).values
         df['internal_high_level'] = np.where(internal_result['HighLow'] == 1, internal_result['Level'], np.nan)
@@ -710,7 +730,7 @@ class SMCCalculator:
 
         # ---- Leg 方向 ----
         df['leg'] = 0
-        size = self.swing_length
+        size = effective_swing
         for i in range(size, len(df)):
             if df['high'].iloc[i] > df['high'].iloc[i - size:i].max():
                 df.iloc[i, df.columns.get_loc('leg')] = 0
@@ -872,19 +892,17 @@ class SMCCalculator:
 
         last_row = df.iloc[-1]
 
-        recent_signals = []
-        lookback = 10
-
-        for i in range(max(0, len(df) - lookback), len(df)):
-            row = df.iloc[i]
-            if row.get('bos_bull', False):
-                recent_signals.append({'type': 'BOS', 'bias': 'bullish', 'index': i})
-            if row.get('bos_bear', False):
-                recent_signals.append({'type': 'BOS', 'bias': 'bearish', 'index': i})
-            if row.get('choch_bull', False):
-                recent_signals.append({'type': 'CHoCH', 'bias': 'bullish', 'index': i})
-            if row.get('choch_bear', False):
-                recent_signals.append({'type': 'CHoCH', 'bias': 'bearish', 'index': i})
+        # Use stored structure signals (already collected during calculate())
+        recent_signals = [
+            {
+                'type': sig.signal_type,
+                'bias': 'bullish' if sig.bias == TrendBias.BULLISH else 'bearish',
+                'index': sig.bar_index,
+            }
+            for sig in self.structure_signals
+        ]
+        # Sort by bar_index to get the most recent
+        recent_signals.sort(key=lambda s: s['index'])
 
         last_signal = recent_signals[-1] if recent_signals else None
 
