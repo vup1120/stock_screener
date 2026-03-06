@@ -163,11 +163,11 @@ class TestSwingHighsLows:
 
 class TestBosChoch:
     def test_bos_choch_returns_correct_columns(self):
-        """Should return BOS, CHOCH, Level, BrokenIndex columns."""
+        """Should return BOS, CHOCH, Level columns."""
         df = _make_ohlcv(200)
         swing = SMCCalculator._swing_highs_lows(df, swing_length=10)
         result = SMCCalculator._detect_bos_choch(df, swing)
-        assert set(result.columns) == {'BOS', 'CHOCH', 'Level', 'BrokenIndex'}
+        assert set(result.columns) == {'BOS', 'CHOCH', 'Level'}
 
     def test_bos_choch_detects_signals(self):
         """Should detect at least some BOS or CHoCH in trending data."""
