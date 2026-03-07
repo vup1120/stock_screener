@@ -400,8 +400,8 @@ with tab2:
                  use_container_width=True, hide_index=True)
 
 with tab3:
-    st.markdown(f"""
-### 指標說明
+    st.markdown("""
+### 圖表指標說明
 
 | 指標 | 說明 |
 |------|------|
@@ -413,9 +413,71 @@ with tab3:
 | **EMA Ribbon** | 5/20/60/120/240 均線排列 |
 | **MaxMin 區間** | 近期高低點通道 |
 
+---
+
+### SMC (Smart Money Concepts) 詳細說明
+
+本系統的 SMC 指標完全對應 TradingView 上 **LuxAlgo - Smart Money Concepts** 的 Pine Script 邏輯。
+
+#### BOS vs CHoCH
+
+| 信號 | 全名 | 意義 |
+|------|------|------|
+| **BOS** | Break of Structure | **趨勢延續** — 價格突破結構，方向與目前趨勢一致 |
+| **CHoCH** | Change of Character | **趨勢反轉** — 價格突破結構，方向與目前趨勢相反 |
+
+**偵測邏輯（對應 Pine Script `displayStructure()`）：**
+- 多方(Bullish)：`close` 向上穿越 pivotHigh 的水平線
+  - 若之前趨勢為 **空頭** → **CHoCH**（反轉信號，較強）
+  - 若之前趨勢為 **多頭** → **BOS**（延續信號，較弱）
+- 空方(Bearish)：`close` 向下穿越 pivotLow 的水平線
+  - 若之前趨勢為 **多頭** → **CHoCH**（反轉信號）
+  - 若之前趨勢為 **空頭** → **BOS**（延續信號）
+
+#### 雙重結構（Internal + Swing）
+
+| 結構層級 | Pine Script 參數 | 說明 |
+|----------|-----------------|------|
+| **Internal（內部結構）** | `size = 5` | 偵測較小的結構變化，信號較頻繁 |
+| **Swing（擺盪結構）** | `size = 50` | 偵測較大的趨勢結構，信號較稀少 |
+
+卡片上的 SMC 信號優先顯示 Swing 信號；若最近 10 根 K 線內無 Swing 信號，則退而顯示最近 20 根 K 線內的 Internal 信號。
+
+#### SMC 強度分數計算
+
+| 信號類型 | 分數 | 說明 |
+|----------|------|------|
+| Swing CHoCH | **90** | 大級別趨勢反轉，最強信號 |
+| Internal CHoCH | **85** | 小級別趨勢反轉 |
+| Swing BOS | **70** | 大級別趨勢延續 |
+| Internal BOS | **65** | 小級別趨勢延續 |
+| 無信號 | **0** | 近期無結構突破 |
+
+> CHoCH（反轉）的分數高於 BOS（延續），因為反轉信號代表趨勢可能改變，對交易決策更為關鍵。
+
+#### Order Blocks（訂單塊）
+
+當 BOS/CHoCH 發生時，系統會在突破前的區間中尋找極端蠟燭：
+- **多方 OB**：突破前區間中 `parsedLow` 最低的蠟燭（綠色框）
+- **空方 OB**：突破前區間中 `parsedHigh` 最高的蠟燭（紅色框）
+- 高波動 K 線（range >= 2 * ATR）會反轉 high/low（`parsedHigh = low, parsedLow = high`）
+- 預設顯示 **Internal Order Blocks**（對應 Pine Script `showInternalOrderBlocksInput = true`）
+
+#### 綜合評分計算
+
+| 條件 | 加分 |
+|------|------|
+| UT Bot 買入信號 | +30 |
+| SMC 多方信號（CHoCH/BOS bull） | +30 |
+| EMA 多頭排列 | +20 |
+| 成交量放大（> 1.5x） | +10 |
+| **滿分** | **90** |
+
+---
+
 ### 資料更新
 ```bash
-# 更新全部 48 支股票（約 2-3 分鐘）
+# 更新全部股票
 python fetch_and_cache.py
 
 # 只更新單一股票
