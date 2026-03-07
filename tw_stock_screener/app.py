@@ -178,7 +178,7 @@ def compute_indicators(stock_id: str, days: int):
     if 'bull' in str(r['smc_signal']): s+=30
     if r['ema_bull']:                  s+=20
     if r['vol_spike']:                 s+=10
-    r['score'] = s
+    r['score'] = round(s * 100 / 90)
 
     return {'df': df, 'combo': combo, 'r': r}
 
@@ -353,8 +353,8 @@ m4.metric("SMC", smc_label, f"{r['smc_str']}/100")
 ema_l = '🟢 多頭' if r['ema_bull'] else ('🔴 空頭' if r['ema_bear'] else '🟡 整理')
 m5.metric("EMA", ema_l)
 
-vrd = '🟢 強勢' if r['score'] >= 60 else ('🟡 觀望' if r['score'] >= 30 else '🔴 謹慎')
-m6.metric("綜合", vrd, f"{r['score']}/90")
+vrd = '🟢 強勢' if r['score'] >= 70 else ('🟡 觀望' if r['score'] >= 40 else '🔴 謹慎')
+m6.metric("綜合", vrd, f"{r['score']}/100")
 
 # ── 圖表（指標選擇即時生效）──────────────────────────────────────────
 
@@ -379,7 +379,7 @@ with tab1:
         st.write(f"趨勢: **{r['smc_trend']}**")
         st.write(f"信號: **{r['smc_signal'] or 'N/A'}**")
         st.write(f"OB: **{r['smc_ob']}**　FVG: **{r['smc_fvg']}**")
-        st.progress(min(int(r['smc_str']*100/90),100), text=f"強度 {r['smc_str']}/90")
+        st.progress(min(r['smc_str'],100), text=f"強度 {r['smc_str']}/100")
     with p3:
         st.markdown("#### 📊 量能 & EMA")
         st.write(f"成交量倍數: **{r['vol_ratio']:.2f}x**")
@@ -388,7 +388,7 @@ with tab1:
         ema_desc = '✅ 多頭排列' if r['ema_bull'] else ('🔴 空頭排列' if r['ema_bear'] else '⚠️ 整理中')
         st.write(f"EMA: **{ema_desc}**")
         st.divider()
-        st.write(f"**綜合評分: {r['score']}/90**　{vrd}")
+        st.write(f"**綜合評分: {r['score']}/100**　{vrd}")
 
 with tab2:
     disp = df.tail(30).copy()
@@ -467,11 +467,13 @@ with tab3:
 
 | 條件 | 加分 |
 |------|------|
-| UT Bot 買入信號 | +30 |
-| SMC 多方信號（CHoCH/BOS bull） | +30 |
-| EMA 多頭排列 | +20 |
-| 成交量放大（> 1.5x） | +10 |
-| **滿分** | **90** |
+| UT Bot 買入信號 | +33 |
+| SMC 多方信號（CHoCH/BOS bull） | +33 |
+| EMA 多頭排列 | +22 |
+| 成交量放大（> 1.5x） | +11 |
+| **滿分** | **100** |
+
+> 原始權重為 30:30:20:10（滿分 90），系統自動 normalize 至 100 分制。
 
 ---
 
