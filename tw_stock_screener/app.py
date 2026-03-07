@@ -178,7 +178,7 @@ def compute_indicators(stock_id: str, days: int):
     if 'bull' in str(r['smc_signal']): s+=30
     if r['ema_bull']:                  s+=20
     if r['vol_spike']:                 s+=10
-    r['score'] = s
+    r['score'] = round(s * 100 / 90)
 
     return {'df': df, 'combo': combo, 'r': r}
 
@@ -467,11 +467,13 @@ with tab3:
 
 | 條件 | 加分 |
 |------|------|
-| UT Bot 買入信號 | +30 |
-| SMC 多方信號（CHoCH/BOS bull） | +30 |
-| EMA 多頭排列 | +20 |
-| 成交量放大（> 1.5x） | +10 |
-| **滿分** | **90** |
+| UT Bot 買入信號 | +33 |
+| SMC 多方信號（CHoCH/BOS bull） | +33 |
+| EMA 多頭排列 | +22 |
+| 成交量放大（> 1.5x） | +11 |
+| **滿分** | **100** |
+
+> 原始權重為 30:30:20:10（滿分 90），系統自動 normalize 至 100 分制。
 
 ---
 
