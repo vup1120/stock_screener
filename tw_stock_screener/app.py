@@ -62,10 +62,18 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.block-container { padding-top: 0.8rem; padding-bottom: 0; }
+.block-container { padding-top: 1.5rem; padding-bottom: 0; }
 section[data-testid="stSidebar"] > div { padding-top: 0.8rem; }
 div[data-testid="stMetric"] {
-    background: #f0f2f6; border-radius: 8px; padding: 6px 12px;
+    background: #f0f2f6; border-radius: 8px; padding: 6px 10px;
+}
+div[data-testid="stMetric"] label {
+    font-size: 0.8rem !important;
+}
+div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-size: 1.1rem !important;
+    white-space: nowrap;
+    overflow: visible;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -123,14 +131,31 @@ def compute_indicators(stock_id: str, days: int):
         r['ut_signal']='hold'; r['ut_trend']='N/A'; r['ut_stop']=None; r['ut_str']=0
 
     try:
-        _, sm = calculate_smc(df, swing_length=SMC_CONFIG['swing_length'],
+        smc_df, sm = calculate_smc(df, swing_length=SMC_CONFIG['swing_length'],
             internal_length=SMC_CONFIG['internal_length'],
             equal_hl_threshold=SMC_CONFIG['equal_hl_threshold'],
             order_block_filter=SMC_CONFIG['order_block_filter'],
             fvg_threshold=SMC_CONFIG['fvg_threshold'])
-        r['smc_signal']=sm.get('signal'); r['smc_trend']=sm.get('swing_trend','N/A')
-        r['smc_str']=sm.get('signal_strength',0)
-        r['smc_ob']=sm.get('order_blocks_count',0); r['smc_fvg']=sm.get('fvg_count',0)
+        # Check both swing and internal signals (internal are more frequent)
+        smc_signal = sm.get('signal')
+        smc_str = sm.get('signal_strength', 0)
+        if not smc_signal:
+            # Fall back to internal signals if no swing signal in last 10 bars
+            lookback = min(20, len(smc_df))
+            for i in range(len(smc_df) - 1, max(0, len(smc_df) - lookback) - 1, -1):
+                row = smc_df.iloc[i]
+                if row.get('internal_choch_bull', False):
+                    smc_signal = 'CHoCH_bull'; smc_str = 85; break
+                if row.get('internal_choch_bear', False):
+                    smc_signal = 'CHoCH_bear'; smc_str = 85; break
+                if row.get('internal_bos_bull', False):
+                    smc_signal = 'BOS_bull'; smc_str = 65; break
+                if row.get('internal_bos_bear', False):
+                    smc_signal = 'BOS_bear'; smc_str = 65; break
+        r['smc_signal'] = smc_signal
+        r['smc_trend'] = sm.get('swing_trend', sm.get('internal_trend', 'N/A'))
+        r['smc_str'] = smc_str
+        r['smc_ob'] = sm.get('order_blocks_count', 0); r['smc_fvg'] = sm.get('fvg_count', 0)
     except Exception:
         r['smc_signal']=None; r['smc_trend']='N/A'; r['smc_str']=0; r['smc_ob']=0; r['smc_fvg']=0
 
@@ -280,9 +305,9 @@ sid = st.session_state.selected
 name = STOCK_NAMES.get(sid, '')
 age  = cache_age_h(sid)
 
-h1, h2 = st.columns([4, 1])
+h1, h2 = st.columns([5, 1])
 with h1:
-    st.markdown(f"## {sid}　{name}")
+    st.markdown(f"### {sid}　{name}")
 with h2:
     st.caption(age_label(age))
 
@@ -304,18 +329,32 @@ r     = data['r']
 
 # ── 指標卡片 ──────────────────────────────────────────────────────────
 
-m1,m2,m3,m4,m5,m6 = st.columns(6)
-m1.metric("收盤價",  f"{r['price']:,.1f}", f"{r['change']:+.2f}%")
-m2.metric("量能",    f"{r['vol_ratio']:.1f}x" + (" ⚡" if r['vol_spike'] else ""))
-ut_ic = {'buy':'🟢','sell':'🔴'}.get(r['ut_signal'],'🟡')
-m3.metric("UT Bot",  f"{ut_ic} {r['ut_signal'].upper()}", r['ut_trend'])
-smc_s = str(r['smc_signal'] or 'N/A')
-smc_ic= '🟢' if 'bull' in smc_s.lower() else ('🔴' if 'bear' in smc_s.lower() else '⚪')
-m4.metric("SMC",     f"{smc_ic} {smc_s}", f"{r['smc_str']}/100")
+m1, m2, m3, m4, m5, m6 = st.columns(6)
+m1.metric("收盤", f"{r['price']:,.1f}", f"{r['change']:+.2f}%")
+m2.metric("量能", f"{r['vol_ratio']:.1f}x", "放量" if r['vol_spike'] else "正常")
+
+ut_ic = {'buy': '🟢', 'sell': '🔴'}.get(r['ut_signal'], '🟡')
+m3.metric("UT Bot", f"{ut_ic} {r['ut_signal'].upper()}", r['ut_trend'])
+
+# SMC: show short readable signal
+smc_raw = str(r['smc_signal'] or '')
+if 'CHoCH' in smc_raw and 'bull' in smc_raw:
+    smc_label = '🟢 CHoCH多'
+elif 'CHoCH' in smc_raw and 'bear' in smc_raw:
+    smc_label = '🔴 CHoCH空'
+elif 'BOS' in smc_raw and 'bull' in smc_raw:
+    smc_label = '🟢 BOS多'
+elif 'BOS' in smc_raw and 'bear' in smc_raw:
+    smc_label = '🔴 BOS空'
+else:
+    smc_label = '⚪ --'
+m4.metric("SMC", smc_label, f"{r['smc_str']}/100")
+
 ema_l = '🟢 多頭' if r['ema_bull'] else ('🔴 空頭' if r['ema_bear'] else '🟡 整理')
-m5.metric("EMA",     ema_l)
-vrd   = '🟢 強勢' if r['score']>=70 else ('🟡 觀望' if r['score']>=40 else '🔴 謹慎')
-m6.metric("綜合",    vrd, f"{r['score']}/100")
+m5.metric("EMA", ema_l)
+
+vrd = '🟢 強勢' if r['score'] >= 70 else ('🟡 觀望' if r['score'] >= 40 else '🔴 謹慎')
+m6.metric("綜合", vrd, f"{r['score']}/100")
 
 # ── 圖表（指標選擇即時生效）──────────────────────────────────────────
 
