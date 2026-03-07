@@ -1208,29 +1208,64 @@ class SMCCalculator:
             if df['choch_bear'].iloc[i]:
                 self.structure_signals.append(StructureSignal('CHoCH', TrendBias.BEARISH, swing_struct['Level'].iloc[i], i, bar_time))
 
-        # ---- Order Blocks (from swing structure BOS/CHoCH events) ----
-        # Use the swing-breakout based method for order blocks
-        ob_result = self._detect_order_blocks(df, swing_result, close_mitigation=False, ob_filter=self.order_block_filter)
-        df['bullish_ob'] = (ob_result['OB'] == 1).values
-        df['bearish_ob'] = (ob_result['OB'] == -1).values
-        df['ob_high'] = np.where(~np.isnan(ob_result['OB']), ob_result['Top'], np.nan)
-        df['ob_low'] = np.where(~np.isnan(ob_result['OB']), ob_result['Bottom'], np.nan)
+        # ---- Order Blocks (from BOS/CHoCH events, matching Pine Script) ----
+        # Pine Script default: showInternalOrderBlocksInput=true, showSwingOrderBlocksInput=false
+        # Internal OBs are triggered by internal structure BOS/CHoCH
+        # Swing OBs are triggered by swing structure BOS/CHoCH
+        internal_ob_events = internal_struct['ob_events']
+
+        # Also get swing OB events from displayStructure
+        swing_display = self._display_structure(closes, highs, lows, effective_swing)
+        swing_ob_events = swing_display['ob_events']
+
+        # Process internal OBs (Pine default: ON)
+        internal_ob_result = self._process_order_blocks(
+            df, internal_ob_events, ob_filter=self.order_block_filter, close_mitigation=False
+        )
+
+        # Process swing OBs (Pine default: OFF, but compute for completeness)
+        swing_ob_result = self._process_order_blocks(
+            df, swing_ob_events, ob_filter=self.order_block_filter, close_mitigation=False
+        )
+
+        # Merge: internal OBs take priority (Pine shows both if enabled)
+        ob_merged = internal_ob_result['OB'].values.copy()
+        ob_top_merged = internal_ob_result['Top'].values.copy()
+        ob_btm_merged = internal_ob_result['Bottom'].values.copy()
+        ob_vol_merged = internal_ob_result['OBVolume'].values.copy()
+        ob_mit_merged = internal_ob_result['MitigatedIndex'].values.copy()
+        ob_pct_merged = internal_ob_result['Percentage'].values.copy()
+
+        # Add swing OBs where internal OBs don't exist
+        for i in range(n):
+            if np.isnan(ob_merged[i]) and not np.isnan(swing_ob_result['OB'].values[i]):
+                ob_merged[i] = swing_ob_result['OB'].values[i]
+                ob_top_merged[i] = swing_ob_result['Top'].values[i]
+                ob_btm_merged[i] = swing_ob_result['Bottom'].values[i]
+                ob_vol_merged[i] = swing_ob_result['OBVolume'].values[i]
+                ob_mit_merged[i] = swing_ob_result['MitigatedIndex'].values[i]
+                ob_pct_merged[i] = swing_ob_result['Percentage'].values[i]
+
+        df['bullish_ob'] = (ob_merged == 1)
+        df['bearish_ob'] = (ob_merged == -1)
+        df['ob_high'] = np.where(~np.isnan(ob_merged), ob_top_merged, np.nan)
+        df['ob_low'] = np.where(~np.isnan(ob_merged), ob_btm_merged, np.nan)
 
         for i in range(n):
-            if not np.isnan(ob_result['OB'].iloc[i]):
-                bias = TrendBias.BULLISH if ob_result['OB'].iloc[i] == 1 else TrendBias.BEARISH
+            if not np.isnan(ob_merged[i]):
+                bias = TrendBias.BULLISH if ob_merged[i] == 1 else TrendBias.BEARISH
                 bar_time = df['date'].iloc[i] if 'date' in df.columns else None
-                mit_idx = int(ob_result['MitigatedIndex'].iloc[i]) if not np.isnan(ob_result['MitigatedIndex'].iloc[i]) else 0
+                mit_idx = int(ob_mit_merged[i]) if not np.isnan(ob_mit_merged[i]) else 0
                 self.order_blocks.append(OrderBlock(
-                    high=ob_result['Top'].iloc[i],
-                    low=ob_result['Bottom'].iloc[i],
+                    high=ob_top_merged[i],
+                    low=ob_btm_merged[i],
                     bar_index=i,
                     bar_time=bar_time,
                     bias=bias,
                     mitigated=mit_idx > 0,
                     mitigated_index=mit_idx,
-                    volume=ob_result['OBVolume'].iloc[i] if not np.isnan(ob_result['OBVolume'].iloc[i]) else 0,
-                    percentage=ob_result['Percentage'].iloc[i] if not np.isnan(ob_result['Percentage'].iloc[i]) else 0,
+                    volume=ob_vol_merged[i] if not np.isnan(ob_vol_merged[i]) else 0,
+                    percentage=ob_pct_merged[i] if not np.isnan(ob_pct_merged[i]) else 0,
                 ))
 
         # ---- FVG ----
