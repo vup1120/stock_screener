@@ -96,9 +96,24 @@ def age_label(h: float) -> str:
     if h < 72:  return f"🟡 {h/24:.1f}天前"
     return f"🔴 {h/24:.0f}天前"
 
+def resample_ohlcv(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    """Resample daily OHLCV data to 2D/3D/1W candles."""
+    if timeframe == '1D':
+        return df
+    rule = {'2D': '2D', '3D': '3D', '1W': 'W-FRI'}[timeframe]
+    df = df.copy()
+    df = df.set_index('date')
+    resampled = df.resample(rule).agg({
+        'open': 'first', 'high': 'max', 'low': 'min',
+        'close': 'last', 'volume': 'sum',
+    }).dropna(subset=['open'])
+    resampled = resampled.reset_index()
+    return resampled
+
+
 # Step 1 — cached: load CSV + compute all indicators (slow once, then instant)
 @st.cache_data(ttl=600, show_spinner=False)
-def compute_indicators(stock_id: str, days: int):
+def compute_indicators(stock_id: str, days: int, timeframe: str = '1D'):
     from indicators.combo_indicator import calculate_combo
     from config import UT_BOT_CONFIG, SMC_CONFIG, EMA_CONFIG, SCREENING_CRITERIA
     from indicators.ut_bot import get_ut_bot_signal, calculate_ut_bot, calculate_ema_ribbon
@@ -109,7 +124,12 @@ def compute_indicators(stock_id: str, days: int):
         return None
     df = pd.read_csv(p)
     df['date'] = pd.to_datetime(df['date'])
-    df = df.sort_values('date').tail(days).reset_index(drop=True)
+    # Load more raw daily data for longer timeframes so we get enough candles
+    tf_mult = {'1D': 1, '2D': 2, '3D': 3, '1W': 5}
+    raw_days = days * tf_mult.get(timeframe, 1)
+    df = df.sort_values('date').tail(raw_days).reset_index(drop=True)
+    df = resample_ohlcv(df, timeframe)
+    df = df.tail(days).reset_index(drop=True)
     if len(df) < 20:
         return None
 
@@ -242,7 +262,13 @@ with st.sidebar:
             format_func=lambda x: 'K線' if x=='candlestick' else 'HA')
     with c2:
         days = st.selectbox("天數",[60,90,120,180,245],index=2)
-    theme = st.radio("主題",['light','dark'],horizontal=True,label_visibility="collapsed")
+
+    c3, c4 = st.columns(2)
+    with c3:
+        timeframe = st.selectbox("週期",['1D','2D','3D','1W'],
+            format_func={'1D':'日K','2D':'二日K','3D':'三日K','1W':'週K'}.get)
+    with c4:
+        theme = st.radio("主題",['light','dark'],horizontal=True,label_visibility="collapsed")
 
     st.divider()
 
@@ -317,7 +343,7 @@ if age < 0:
     st.stop()
 
 with st.spinner("計算指標中…"):
-    data = compute_indicators(sid, days)
+    data = compute_indicators(sid, days, timeframe)
 
 if data is None:
     st.error("資料不足，請重新抓取。")
