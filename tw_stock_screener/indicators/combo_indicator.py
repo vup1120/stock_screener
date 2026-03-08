@@ -107,11 +107,11 @@ def calculate_combo(
     smc_summary = calculator.get_summary(smc_df)
     ob_list = [
         {'high': ob.high, 'low': ob.low, 'bar_index': ob.bar_index, 'bias': 'bullish' if ob.bias == TrendBias.BULLISH else 'bearish'}
-        for ob in calculator.order_blocks[-10:]
+        for ob in calculator.order_blocks[-5:]
     ]
     fvg_list = [
         {'top': fvg.top, 'bottom': fvg.bottom, 'bar_index': fvg.bar_index, 'bias': 'bullish' if fvg.bias == TrendBias.BULLISH else 'bearish'}
-        for fvg in calculator.fair_value_gaps[-10:]
+        for fvg in calculator.fair_value_gaps[-5:]
     ]
     out['smc_data'] = {
         'bos_bull': smc_df.get('bos_bull'),
