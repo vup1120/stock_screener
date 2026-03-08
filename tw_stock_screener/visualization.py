@@ -465,6 +465,9 @@ class PlotlyChart:
         )
         return self.fig
     
+    # Maximum number of recent BOS/CHoCH labels to display (Present mode style)
+    SMC_MAX_LABELS = 10
+
     def add_smc_signals(
         self,
         bos_bull: pd.Series = None,
@@ -474,13 +477,16 @@ class PlotlyChart:
     ):
         """
         加入 SMC 結構信號 (BOS / CHoCH)
+        Only shows the most recent signals to keep the chart clean (Present mode).
         """
         if self.fig is None:
             raise ValueError("請先建立圖表")
-        
+
+        max_labels = self.SMC_MAX_LABELS
+
         # BOS Bullish
         if bos_bull is not None:
-            points = self.df[bos_bull]
+            points = self.df[bos_bull].tail(max_labels)
             if len(points) > 0:
                 self.fig.add_trace(
                     go.Scatter(
@@ -494,10 +500,10 @@ class PlotlyChart:
                     ),
                     row=1, col=1
                 )
-        
+
         # BOS Bearish
         if bos_bear is not None:
-            points = self.df[bos_bear]
+            points = self.df[bos_bear].tail(max_labels)
             if len(points) > 0:
                 self.fig.add_trace(
                     go.Scatter(
@@ -511,10 +517,10 @@ class PlotlyChart:
                     ),
                     row=1, col=1
                 )
-        
+
         # CHoCH Bullish
         if choch_bull is not None:
-            points = self.df[choch_bull]
+            points = self.df[choch_bull].tail(max_labels)
             if len(points) > 0:
                 self.fig.add_trace(
                     go.Scatter(
@@ -528,10 +534,10 @@ class PlotlyChart:
                     ),
                     row=1, col=1
                 )
-        
+
         # CHoCH Bearish
         if choch_bear is not None:
-            points = self.df[choch_bear]
+            points = self.df[choch_bear].tail(max_labels)
             if len(points) > 0:
                 self.fig.add_trace(
                     go.Scatter(
@@ -545,25 +551,30 @@ class PlotlyChart:
                     ),
                     row=1, col=1
                 )
-        
+
         return self.fig
     
+    # Max bars to extend OB/FVG rectangles forward from their origin
+    OB_FVG_EXTEND_BARS = 20
+
     def add_order_blocks(self, order_blocks: List[Dict]):
         """
         加入 Order Blocks 區塊
-        
+
         order_blocks: List of dict with keys: high, low, bar_index, bias ('bullish'/'bearish')
+        Only shows the most recent 5 (matching LuxAlgo default).
+        Rectangles extend forward by OB_FVG_EXTEND_BARS bars, not to chart end.
         """
         if self.fig is None:
             raise ValueError("請先建立圖表")
-        
-        for ob in order_blocks[-10:]:  # 只顯示最近 10 個
+
+        last_idx = len(self.df) - 1
+        for ob in order_blocks[-5:]:
             color = self.COLORS['ob_bull'] if ob.get('bias') == 'bullish' else self.COLORS['ob_bear']
 
             start_idx = ob.get('bar_index', 0)
             if start_idx < len(self.df):
-                # With categorical x-axis, shapes use integer bar positions
-                end_idx = len(self.df) - 1
+                end_idx = min(start_idx + self.OB_FVG_EXTEND_BARS, last_idx)
 
                 self.fig.add_shape(
                     type="rect",
@@ -576,25 +587,26 @@ class PlotlyChart:
                     layer="below",
                     row=1, col=1
                 )
-        
+
         return self.fig
     
     def add_fvg(self, fvg_list: List[Dict]):
         """
         加入 Fair Value Gaps 區塊
-        
+
         fvg_list: List of dict with keys: top, bottom, bar_index, bias
+        Only shows the most recent 5. Rectangles extend forward by OB_FVG_EXTEND_BARS bars.
         """
         if self.fig is None:
             raise ValueError("請先建立圖表")
-        
-        for fvg in fvg_list[-10:]:
+
+        last_idx = len(self.df) - 1
+        for fvg in fvg_list[-5:]:
             color = self.COLORS['fvg_bull'] if fvg.get('bias') == 'bullish' else self.COLORS['fvg_bear']
 
             start_idx = fvg.get('bar_index', 0)
             if start_idx < len(self.df):
-                # With categorical x-axis, shapes use integer bar positions
-                end_idx = len(self.df) - 1
+                end_idx = min(start_idx + self.OB_FVG_EXTEND_BARS, last_idx)
 
                 self.fig.add_shape(
                     type="rect",
@@ -607,7 +619,7 @@ class PlotlyChart:
                     layer="below",
                     row=1, col=1
                 )
-        
+
         return self.fig
     
     def add_horizontal_line(self, price: float, label: str, color: str = None):
